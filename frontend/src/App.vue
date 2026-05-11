@@ -1,0 +1,639 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  ChatDotRound,
+  Connection,
+  DataAnalysis,
+  Delete,
+  Document,
+  FolderAdd,
+  Refresh,
+  Tickets,
+  UploadFilled
+} from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import * as echarts from 'echarts'
+import {
+  api,
+  type Answer,
+  type Dataset,
+  type DocumentChunk,
+  type DocumentItem,
+  type GraphEdge,
+  type GraphNode,
+  type ImportTask,
+  type TabularRecord
+} from './api/client'
+
+type AppPage = 'data' | 'analysis'
+type DataView = 'insar' | 'water_level' | 'rainfall' | 'documents' | 'chunks'
+
+const activePage = ref<AppPage>('data')
+const datasets = ref<Dataset[]>([])
+const imports = ref<ImportTask[]>([])
+const records = ref<TabularRecord[]>([])
+const recordTotal = ref(0)
+const recordPage = ref(1)
+const recordPageSize = ref(20)
+const documents = ref<DocumentItem[]>([])
+const chunks = ref<DocumentChunk[]>([])
+const selectedDatasetId = ref('')
+const selectedChunkId = ref('')
+const datasetName = ref('')
+const datasetDescription = ref('')
+const uploadDataType = ref('insar')
+const dataView = ref<DataView>('insar')
+const selectedFile = ref<File | null>(null)
+const graphNodes = ref<GraphNode[]>([])
+const graphEdges = ref<GraphEdge[]>([])
+const graphCanvas = ref<HTMLDivElement | null>(null)
+let chart: echarts.ECharts | null = null
+const question = ref('')
+const answer = ref<Answer | null>(null)
+const loading = ref(false)
+const dataLoading = ref(false)
+
+const selectedDataset = computed(() => datasets.value.find((item) => item.id === selectedDatasetId.value))
+const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].includes(dataView.value))
+
+const dataViewLabel = computed(() => {
+  const labels: Record<DataView, string> = {
+    insar: 'InSAR数据',
+    water_level: '库水位数据',
+    rainfall: '降雨数据',
+    documents: '文本资料',
+    chunks: '文本切片'
+  }
+  return labels[dataView.value]
+})
+
+const recordRows = computed(() =>
+  records.value.map((record) => {
+    const row: Record<string, unknown> = {
+      id: record.id,
+      row_number: record.row_number,
+      data_type: record.data_type,
+      timestamp: formatValue(record.timestamp),
+      ...record.raw_fields,
+      ...record.normalized_fields,
+      raw_fields: record.raw_fields
+    }
+
+    const longitude = record.normalized_fields.longitude ?? record.raw_fields.lon ?? record.raw_fields.longitude
+    const latitude = record.normalized_fields.latitude ?? record.raw_fields.lat ?? record.raw_fields.latitude
+    delete row.lon
+    delete row.lat
+    row.longitude = longitude
+    row.latitude = latitude
+    return row
+  })
+)
+
+const recordColumns = computed(() => {
+  const preferred = [
+    'row_number',
+    'data_type',
+    'timestamp',
+    'landslide_name',
+    'point_id',
+    'station_name',
+    'longitude',
+    'latitude',
+    'elevation',
+    'displacement',
+    'velocity',
+    'water_level'
+  ]
+  const keys = new Set<string>()
+  recordRows.value.forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      if (!['id', 'raw_fields'].includes(key)) keys.add(key)
+    })
+  })
+  return preferred.filter((key) => keys.has(key)).concat([...keys].filter((key) => !preferred.includes(key)))
+})
+
+const selectedChunk = computed(() => chunks.value.find((chunk) => chunk.id === selectedChunkId.value) || chunks.value[0])
+
+async function refreshAll() {
+  loading.value = true
+  try {
+    datasets.value = await api.listDatasets()
+    if (!selectedDatasetId.value && datasets.value.length > 0) {
+      selectedDatasetId.value = datasets.value[0].id
+    }
+    await refreshDatasetScope()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '刷新失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshDatasetScope() {
+  recordPage.value = 1
+  if (!selectedDatasetId.value) {
+    imports.value = []
+    records.value = []
+    recordTotal.value = 0
+    documents.value = []
+    chunks.value = []
+    graphNodes.value = []
+    graphEdges.value = []
+    return
+  }
+  await Promise.all([refreshImports(), refreshDataContent(), refreshGraph()])
+}
+
+async function createDataset() {
+  if (!datasetName.value.trim()) {
+    ElMessage.warning('请输入数据集名称')
+    return
+  }
+  const dataset = await api.createDataset({ name: datasetName.value, description: datasetDescription.value })
+  datasets.value.unshift(dataset)
+  selectedDatasetId.value = dataset.id
+  datasetName.value = ''
+  datasetDescription.value = ''
+  ElMessage.success('数据集已创建')
+  await refreshDatasetScope()
+}
+
+async function deleteCurrentDataset() {
+  if (!selectedDataset.value) {
+    ElMessage.warning('请先选择数据集')
+    return
+  }
+  await ElMessageBox.confirm(
+    `确定删除数据集“${selectedDataset.value.name}”吗？该操作会同时删除其上传文件记录、表格数据、文本数据、问答记录和图谱节点。`,
+    '删除数据集',
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+  )
+  await api.deleteDataset(selectedDataset.value.id)
+  ElMessage.success('数据集已删除')
+  selectedDatasetId.value = ''
+  await refreshAll()
+}
+
+function onFileChange(file: { raw?: File }) {
+  selectedFile.value = file.raw || null
+}
+
+async function uploadFile() {
+  if (!selectedDatasetId.value || !selectedFile.value) {
+    ElMessage.warning('请选择数据集和文件')
+    return
+  }
+  const result = await api.uploadFile(selectedDatasetId.value, uploadDataType.value, selectedFile.value)
+  selectedFile.value = null
+  ElMessage.success(result.status === 'completed' ? '数据已入库' : '导入任务已创建')
+  await refreshImports()
+  recordPage.value = 1
+  await refreshDataContent()
+}
+
+async function retryImport(taskId: string) {
+  const result = await api.retryImport(taskId)
+  ElMessage.success(result.status === 'completed' ? '数据已重新入库' : '已重新加入导入队列')
+  await refreshImports()
+  recordPage.value = 1
+  await refreshDataContent()
+}
+
+async function deleteImportTask(row: ImportTask) {
+  await ElMessageBox.confirm('确定删除该导入任务及其产生的数据吗？', '删除导入数据', {
+    type: 'warning',
+    confirmButtonText: '删除',
+    cancelButtonText: '取消'
+  })
+  await api.deleteImport(row.id)
+  ElMessage.success('导入任务及相关数据已删除')
+  await refreshImports()
+  recordPage.value = 1
+  await refreshDataContent()
+}
+
+async function deleteCurrentData() {
+  if (!selectedDatasetId.value) {
+    ElMessage.warning('请先选择数据集')
+    return
+  }
+  await ElMessageBox.confirm(`确定删除当前数据集下的“${dataViewLabel.value}”吗？`, '删除数据', {
+    type: 'warning',
+    confirmButtonText: '删除',
+    cancelButtonText: '取消'
+  })
+  await api.deleteData(selectedDatasetId.value, dataView.value)
+  ElMessage.success('数据已删除')
+  recordPage.value = 1
+  await refreshDataContent()
+  await refreshImports()
+}
+
+async function refreshImports() {
+  imports.value = selectedDatasetId.value ? await api.listImports(selectedDatasetId.value) : []
+}
+
+async function refreshDataContent() {
+  if (!selectedDatasetId.value) return
+  dataLoading.value = true
+  try {
+    if (isRecordView.value) {
+      const page = await api.listRecords(
+        selectedDatasetId.value,
+        dataView.value,
+        recordPage.value,
+        recordPageSize.value
+      )
+      records.value = page.items
+      recordTotal.value = page.total
+      documents.value = []
+      chunks.value = []
+      return
+    }
+
+    records.value = []
+    recordTotal.value = 0
+    if (dataView.value === 'documents') {
+      documents.value = await api.listDocuments(selectedDatasetId.value)
+      chunks.value = []
+    } else {
+      documents.value = []
+      chunks.value = await api.listDocumentChunks(selectedDatasetId.value)
+      if (!chunks.value.some((chunk) => chunk.id === selectedChunkId.value)) {
+        selectedChunkId.value = chunks.value[0]?.id || ''
+      }
+    }
+  } finally {
+    dataLoading.value = false
+  }
+}
+
+async function changeDataView() {
+  recordPage.value = 1
+  await refreshDataContent()
+}
+
+async function changeRecordPage(page: number) {
+  recordPage.value = page
+  await refreshDataContent()
+}
+
+async function buildGraph() {
+  if (!selectedDatasetId.value) {
+    ElMessage.warning('请先选择数据集')
+    return
+  }
+  const summary = await api.buildGraph(selectedDatasetId.value)
+  ElMessage.success(`已为当前数据集生成图谱：${summary.monitor_points || 0} 个监测点`)
+  await refreshGraph()
+}
+
+async function refreshGraph() {
+  if (!selectedDatasetId.value) {
+    graphNodes.value = []
+    graphEdges.value = []
+    return
+  }
+  const graph = await api.getGraph(selectedDatasetId.value)
+  graphNodes.value = graph.nodes
+  graphEdges.value = graph.edges
+  await nextTick()
+  renderGraph()
+}
+
+async function ask() {
+  if (!question.value.trim()) {
+    ElMessage.warning('请输入问题')
+    return
+  }
+  answer.value = await api.ask(question.value, selectedDatasetId.value || undefined)
+}
+
+function formatValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function columnLabel(key: string) {
+  const labels: Record<string, string> = {
+    row_number: '行号',
+    data_type: '类型',
+    timestamp: '时间',
+    landslide_name: '滑坡体',
+    point_id: '监测点',
+    station_name: '站点',
+    longitude: '经度',
+    latitude: '纬度',
+    elevation: '高程',
+    displacement: '位移',
+    velocity: '速率',
+    water_level: '水位'
+  }
+  return labels[key] || key
+}
+
+function selectChunk(row: DocumentChunk) {
+  selectedChunkId.value = row.id
+}
+
+function renderGraph() {
+  if (!graphCanvas.value) return
+  chart ||= echarts.init(graphCanvas.value)
+  const categories = Array.from(new Set(graphNodes.value.map((node) => node.type))).map((name) => ({ name }))
+  chart.setOption({
+    tooltip: {},
+    legend: [{ data: categories.map((item) => item.name), bottom: 0 }],
+    series: [
+      {
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        categories,
+        force: { repulsion: 180, edgeLength: 90 },
+        label: { show: true, position: 'right', overflow: 'truncate', width: 120 },
+        edgeLabel: { show: true, formatter: '{c}', fontSize: 10 },
+        data: graphNodes.value.map((node) => ({
+          id: node.id,
+          name: node.label,
+          category: node.type,
+          value: node.type,
+          symbolSize: node.type === 'Landslide' ? 54 : 38
+        })),
+        links: graphEdges.value.map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          value: edge.label
+        })),
+        lineStyle: { color: '#7a8f98', curveness: 0.16 },
+        emphasis: { focus: 'adjacency' }
+      }
+    ]
+  })
+  chart.resize()
+}
+
+onMounted(refreshAll)
+onBeforeUnmount(() => chart?.dispose())
+watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
+</script>
+
+<template>
+  <el-container class="layout">
+    <el-aside width="280px" class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SM</div>
+        <div>
+          <h1>SlideMind</h1>
+          <p>滑坡智能问答</p>
+        </div>
+      </div>
+
+      <div class="nav-switch">
+        <el-button :type="activePage === 'data' ? 'primary' : 'default'" @click="activePage = 'data'">
+          数据管理
+        </el-button>
+        <el-button :type="activePage === 'analysis' ? 'primary' : 'default'" @click="activePage = 'analysis'">
+          智能分析
+        </el-button>
+      </div>
+
+      <el-select v-model="selectedDatasetId" placeholder="选择数据集" class="full" @change="refreshDatasetScope">
+        <el-option v-for="dataset in datasets" :key="dataset.id" :label="dataset.name" :value="dataset.id" />
+      </el-select>
+      <el-button class="full danger-outline" :icon="Delete" :disabled="!selectedDatasetId" @click="deleteCurrentDataset">
+        删除数据集
+      </el-button>
+
+      <el-divider />
+
+      <el-form label-position="top">
+        <el-form-item label="新建数据集">
+          <el-input v-model="datasetName" placeholder="例如：三峡库区试验数据" />
+        </el-form-item>
+        <el-form-item>
+          <el-input v-model="datasetDescription" type="textarea" :rows="2" placeholder="描述" />
+        </el-form-item>
+        <el-button type="primary" :icon="FolderAdd" class="full" @click="createDataset">创建</el-button>
+      </el-form>
+    </el-aside>
+
+    <el-main v-loading="loading" class="main">
+      <div class="topbar">
+        <div>
+          <h2>{{ selectedDataset?.name || '未选择数据集' }}</h2>
+          <p>{{ activePage === 'data' ? '上传、查看和删除数据' : '生成知识图谱并进行智能问答' }}</p>
+        </div>
+        <el-button :icon="Refresh" circle @click="refreshAll" />
+      </div>
+
+      <template v-if="activePage === 'data'">
+        <el-row :gutter="16">
+          <el-col :span="10">
+            <section class="panel">
+              <div class="panel-title">
+                <el-icon><UploadFilled /></el-icon>
+                <span>数据输入</span>
+              </div>
+              <el-segmented
+                v-model="uploadDataType"
+                :options="[
+                  { label: 'InSAR', value: 'insar' },
+                  { label: '库水位', value: 'water_level' },
+                  { label: '降雨', value: 'rainfall' },
+                  { label: '文本', value: 'document' }
+                ]"
+              />
+              <el-upload class="upload" drag :auto-upload="false" :limit="1" :on-change="onFileChange">
+                <el-icon class="upload-icon"><UploadFilled /></el-icon>
+                <div>拖入或点击选择 csv、xlsx、txt、docx、pdf</div>
+              </el-upload>
+              <el-button type="primary" class="full" :disabled="!selectedDatasetId" @click="uploadFile">提交导入</el-button>
+            </section>
+          </el-col>
+
+          <el-col :span="14">
+            <section class="panel">
+              <div class="panel-title">
+                <el-icon><DataAnalysis /></el-icon>
+                <span>导入任务</span>
+                <el-button size="small" :icon="Refresh" @click="refreshImports">刷新</el-button>
+              </div>
+              <el-table :data="imports" height="280" size="small" empty-text="当前数据集暂无导入任务">
+                <el-table-column prop="data_type" label="类型" width="100" />
+                <el-table-column prop="status" label="状态" width="110">
+                  <template #default="{ row }">
+                    <el-tag :type="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : 'info'">
+                      {{ row.status }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="日志" min-width="220">
+                  <template #default="{ row }">{{ row.logs?.at(-1) || '-' }}</template>
+                </el-table-column>
+                <el-table-column prop="updated_at" label="更新时间" width="180" />
+                <el-table-column label="操作" width="190" fixed="right">
+                  <template #default="{ row }">
+                    <el-button v-if="row.status !== 'running'" size="small" @click="retryImport(row.id)">重新处理</el-button>
+                    <el-button size="small" type="danger" :icon="Delete" @click="deleteImportTask(row)" />
+                  </template>
+                </el-table-column>
+              </el-table>
+            </section>
+          </el-col>
+        </el-row>
+
+        <section class="panel data-panel">
+          <div class="panel-title">
+            <el-icon><Tickets /></el-icon>
+            <span>数据内容：{{ selectedDataset?.name || '未选择数据集' }}</span>
+            <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshDataContent">刷新</el-button>
+            <el-button size="small" type="danger" :icon="Delete" :disabled="!selectedDatasetId" @click="deleteCurrentData">
+              删除当前数据
+            </el-button>
+          </div>
+
+          <el-segmented
+            v-model="dataView"
+            class="data-tabs"
+            :options="[
+              { label: 'InSAR数据', value: 'insar' },
+              { label: '库水位数据', value: 'water_level' },
+              { label: '降雨数据', value: 'rainfall' },
+              { label: '文本资料', value: 'documents' },
+              { label: '文本切片', value: 'chunks' }
+            ]"
+            @change="changeDataView"
+          />
+
+          <el-empty v-if="!selectedDatasetId" description="请先选择数据集" />
+
+          <template v-else-if="isRecordView">
+            <el-table
+              v-loading="dataLoading"
+              :data="recordRows"
+              height="360"
+              size="small"
+              border
+              empty-text="当前数据集暂无此类表格数据"
+            >
+              <el-table-column
+                v-for="column in recordColumns"
+                :key="column"
+                :prop="column"
+                :label="columnLabel(column)"
+                min-width="120"
+                show-overflow-tooltip
+              >
+                <template #default="{ row }">{{ formatValue(row[column]) }}</template>
+              </el-table-column>
+              <el-table-column label="原始字段" width="110" fixed="right">
+                <template #default="{ row }">
+                  <el-popover placement="left" width="520" trigger="click">
+                    <pre class="json-preview">{{ JSON.stringify(row.raw_fields, null, 2) }}</pre>
+                    <template #reference>
+                      <el-button size="small">查看</el-button>
+                    </template>
+                  </el-popover>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="pagination-bar">
+              <span>共 {{ recordTotal }} 条，每页 {{ recordPageSize }} 条</span>
+              <el-pagination
+                background
+                layout="prev, pager, next"
+                :current-page="recordPage"
+                :page-size="recordPageSize"
+                :total="recordTotal"
+                @current-change="changeRecordPage"
+              />
+            </div>
+          </template>
+
+          <el-table
+            v-else-if="dataView === 'documents'"
+            v-loading="dataLoading"
+            :data="documents"
+            height="360"
+            size="small"
+            border
+            empty-text="当前数据集暂无文本资料"
+          >
+            <el-table-column prop="title" label="文件名" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="source_file_id" label="文件ID" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="created_at" label="入库时间" width="180" />
+          </el-table>
+
+          <el-row v-else :gutter="12" v-loading="dataLoading">
+            <el-col :span="10">
+              <el-table
+                :data="chunks"
+                height="360"
+                size="small"
+                border
+                highlight-current-row
+                empty-text="当前数据集暂无文本切片"
+                @row-click="selectChunk"
+              >
+                <el-table-column prop="chunk_index" label="序号" width="80" />
+                <el-table-column prop="text" label="内容预览" min-width="220" show-overflow-tooltip />
+              </el-table>
+            </el-col>
+            <el-col :span="14">
+              <div class="chunk-preview">
+                <div class="chunk-title">
+                  <el-icon><Document /></el-icon>
+                  <span>切片预览</span>
+                </div>
+                <p>{{ selectedChunk?.text || '暂无可预览内容' }}</p>
+              </div>
+            </el-col>
+          </el-row>
+        </section>
+      </template>
+
+      <template v-else>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <section class="panel">
+              <div class="panel-title">
+                <el-icon><Connection /></el-icon>
+                <span>知识图谱：{{ selectedDataset?.name || '未选择数据集' }}</span>
+                <el-button size="small" type="primary" :disabled="!selectedDatasetId" @click="buildGraph">生成</el-button>
+              </div>
+              <div class="graph-box">
+                <div v-if="graphNodes.length === 0" class="empty">当前数据集暂无图谱节点</div>
+                <div ref="graphCanvas" class="graph-canvas" />
+              </div>
+              <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系</div>
+            </section>
+          </el-col>
+
+          <el-col :span="12">
+            <section class="panel qa-panel">
+              <div class="panel-title">
+                <el-icon><ChatDotRound /></el-icon>
+                <span>智能问答</span>
+              </div>
+              <el-input
+                v-model="question"
+                type="textarea"
+                :rows="4"
+                placeholder="例如：库水位变化是否和位移异常有关？"
+              />
+              <el-button type="primary" class="full" @click="ask">提问</el-button>
+              <div v-if="answer" class="answer">
+                <el-tag>{{ answer.route }}</el-tag>
+                <p>{{ answer.answer }}</p>
+                <pre>{{ JSON.stringify(answer.sources.slice(0, 3), null, 2) }}</pre>
+              </div>
+            </section>
+          </el-col>
+        </el-row>
+      </template>
+    </el-main>
+  </el-container>
+</template>
