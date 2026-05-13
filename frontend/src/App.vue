@@ -78,14 +78,13 @@ const dataViewLabel = computed(() => {
 })
 
 const recordRows = computed(() =>
-  records.value.map((record) => {
+  records.value.map((record, index) => {
     const row: Record<string, unknown> = {
-      id: record.id,
-      row_number: record.row_number,
-      data_type: record.data_type,
-      timestamp: formatValue(record.timestamp),
       ...record.raw_fields,
       ...record.normalized_fields,
+      id: record.id,
+      row_number: (recordPage.value - 1) * recordPageSize.value + index + 1,
+      timestamp: formatValue(record.timestamp),
       raw_fields: record.raw_fields
     }
     const longitude = record.normalized_fields.longitude ?? record.raw_fields.lon ?? record.raw_fields.longitude
@@ -101,7 +100,6 @@ const recordRows = computed(() =>
 const recordColumns = computed(() => {
   const preferred = [
     'row_number',
-    'data_type',
     'timestamp',
     'landslide_name',
     'point_id',
@@ -116,11 +114,18 @@ const recordColumns = computed(() => {
   const keys = new Set<string>()
   recordRows.value.forEach((row) => {
     Object.keys(row).forEach((key) => {
-      if (!['id', 'raw_fields'].includes(key)) keys.add(key)
+      if (!['id', 'raw_fields', 'data_type'].includes(key)) keys.add(key)
     })
   })
   return preferred.filter((key) => keys.has(key)).concat([...keys].filter((key) => !preferred.includes(key)))
 })
+
+const gisRows = computed(() =>
+  gisFeatures.value.map((feature, index) => ({
+    ...feature,
+    display_index: (gisPage.value - 1) * gisPageSize.value + index + 1
+  }))
+)
 
 const selectedChunk = computed(() => chunks.value.find((chunk) => chunk.id === selectedChunkId.value) || chunks.value[0])
 
@@ -399,7 +404,6 @@ function formatValue(value: unknown) {
 function columnLabel(key: string) {
   const labels: Record<string, string> = {
     row_number: '行号',
-    data_type: '类型',
     timestamp: '时间',
     landslide_name: '滑坡体',
     point_id: '监测点',
@@ -659,13 +663,13 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
           <template v-else-if="isGisView">
             <el-table
               v-loading="dataLoading"
-              :data="gisFeatures"
+              :data="gisRows"
               height="360"
               size="small"
               border
               empty-text="当前数据集暂无GIS矢量数据"
             >
-              <el-table-column prop="feature_index" label="序号" width="80" />
+              <el-table-column prop="display_index" label="序号" width="80" />
               <el-table-column prop="gis_category_name" label="类别" width="110" />
               <el-table-column prop="layer_name" label="图层" min-width="160" show-overflow-tooltip />
               <el-table-column prop="geometry_type" label="几何类型" width="120" />
