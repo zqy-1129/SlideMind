@@ -554,7 +554,7 @@ function collapseGraphNode(nodeId: string) {
   nextTick(renderGraph)
 }
 
-function buildTreeGraph() {
+function buildVisibleGraph() {
   const nodeMap = new Map(graphNodes.value.map((node) => [node.id, node]))
   const rootIds = graphNodes.value.filter((node) => isDatasetNode(node)).map((node) => node.id)
   const rootId = rootIds[0]
@@ -567,43 +567,24 @@ function buildTreeGraph() {
   })
 
   const visibleIds = new Set<string>()
-  const levels = new Map<string, number>()
-  const visit = (nodeId: string, level: number) => {
+  const visit = (nodeId: string) => {
     if (!nodeMap.has(nodeId) || visibleIds.has(nodeId)) return
     visibleIds.add(nodeId)
-    levels.set(nodeId, level)
     if (!expandedGraphNodeIds.value.has(nodeId)) return
     ;(children.get(nodeId) || [])
       .filter((childId) => childId !== nodeId)
       .slice(0, graphLimit.value)
-      .forEach((childId) => visit(childId, level + 1))
+      .forEach((childId) => visit(childId))
   }
 
-  if (rootId) visit(rootId, 0)
-  if (!rootId) graphNodes.value.forEach((node) => visit(node.id, 0))
+  if (rootId) visit(rootId)
+  if (!rootId) graphNodes.value.forEach((node) => visit(node.id))
 
   const visibleNodes = graphNodes.value.filter((node) => visibleIds.has(node.id))
-  const levelGroups = new Map<number, GraphNode[]>()
-  visibleNodes.forEach((node) => {
-    const level = levels.get(node.id) ?? 1
-    const group = levelGroups.get(level) || []
-    group.push(node)
-    levelGroups.set(level, group)
-  })
-
-  const positions = new Map<string, { x: number; y: number }>()
-  levelGroups.forEach((nodes, level) => {
-    const gap = 190
-    const start = -((nodes.length - 1) * gap) / 2
-    nodes.forEach((node, index) => {
-      positions.set(node.id, { x: start + index * gap, y: level * 150 })
-    })
-  })
 
   return {
     nodes: visibleNodes,
     edges: treeEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
-    positions,
     children
   }
 }
@@ -624,14 +605,15 @@ function renderGraph() {
       }
     }
   })
-  const hierarchy = buildTreeGraph()
-  const visibleNodes = hierarchy.nodes
-  const visibleEdges = hierarchy.edges
+  const visibleGraph = buildVisibleGraph()
+  const visibleNodes = visibleGraph.nodes
+  const visibleEdges = visibleGraph.edges
   const categories = Array.from(new Set(visibleNodes.map((node) => node.type))).map((name, index) => ({
     name,
     itemStyle: { color: graphTypeColors[index % graphTypeColors.length] }
   }))
   const categoryIndex = new Map(categories.map((category, index) => [category.name, index]))
+  chart.clear()
   chart.setOption({
     tooltip: {
       formatter: (params: { dataType?: string; data?: { name?: string; category?: string }; value?: string }) => {
@@ -643,10 +625,11 @@ function renderGraph() {
     series: [
       {
         type: 'graph',
-        layout: 'none',
+        layout: 'force',
         roam: true,
         draggable: true,
         categories,
+        force: { repulsion: 680, edgeLength: [120, 260], gravity: 0.04, friction: 0.22 },
         label: { show: true, position: 'right', overflow: 'truncate', width: 150 },
         edgeLabel: { show: visibleNodes.length <= 80, formatter: '{c}', fontSize: 10 },
         data: visibleNodes.map((node) => ({
@@ -654,8 +637,7 @@ function renderGraph() {
           name: node.label,
           category: categoryIndex.get(node.type) ?? 0,
           value: node.type,
-          symbolSize: isDatasetNode(node) ? 62 : node.type.includes('集合') ? 46 : 36,
-          ...(hierarchy?.positions.get(node.id) || {})
+          symbolSize: isDatasetNode(node) ? 62 : node.type.includes('集合') ? 46 : 36
         })),
         links: visibleEdges.map((edge) => ({
           source: edge.source,
