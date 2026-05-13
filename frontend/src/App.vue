@@ -12,7 +12,7 @@ import {
   Tickets,
   UploadFilled
 } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type UploadInstance, type UploadUserFile } from 'element-plus'
 import * as echarts from 'echarts'
 import {
   api,
@@ -50,7 +50,8 @@ const datasetDescription = ref('')
 const uploadDataType = ref('insar')
 const uploadGisCategory = ref('area')
 const dataView = ref<DataView>('insar')
-const selectedFile = ref<File | null>(null)
+const selectedFiles = ref<NonNullable<UploadUserFile['raw']>[]>([])
+const uploadRef = ref<UploadInstance>()
 const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
@@ -186,29 +187,60 @@ async function deleteCurrentDataset() {
   await refreshAll()
 }
 
-function onFileChange(file: { raw?: File }) {
-  selectedFile.value = file.raw || null
-  if (selectedFile.value && isGisFile(selectedFile.value.name)) {
+function onFileChange(_file: UploadUserFile, fileList: UploadUserFile[]) {
+  selectedFiles.value = fileList
+    .map((item) => item.raw)
+    .filter((item): item is NonNullable<UploadUserFile['raw']> => Boolean(item))
+  if (selectedFiles.value.some((file) => isGisFile(file.name))) {
     uploadDataType.value = 'gis_vector'
   }
 }
 
 async function uploadFile() {
-  if (!selectedDatasetId.value || !selectedFile.value) {
+  if (!selectedDatasetId.value || selectedFiles.value.length === 0) {
     ElMessage.warning('请选择数据集和文件')
     return
   }
-  if (isGisFile(selectedFile.value.name)) {
+  const files = [...selectedFiles.value]
+  const hasGisFiles = files.some((file) => isGisFile(file.name))
+  const hasNonGisFiles = files.some((file) => !isGisFile(file.name))
+  if (hasGisFiles && hasNonGisFiles) {
+    ElMessage.warning('批量导入时请不要混合 GIS 文件和其他类型文件')
+    return
+  }
+  if (hasGisFiles) {
     uploadDataType.value = 'gis_vector'
   }
-  const result = await api.uploadFile(
-    selectedDatasetId.value,
-    uploadDataType.value,
-    selectedFile.value,
-    uploadDataType.value === 'gis_vector' ? uploadGisCategory.value : undefined
-  )
-  selectedFile.value = null
-  ElMessage.success(result.status === 'completed' ? '数据已入库' : '导入任务已创建')
+
+  let completed = 0
+  let queued = 0
+  let failed = 0
+  for (const file of files) {
+    try {
+      const result = await api.uploadFile(
+        selectedDatasetId.value,
+        uploadDataType.value,
+        file,
+        uploadDataType.value === 'gis_vector' ? uploadGisCategory.value : undefined
+      )
+      if (result.status === 'completed') {
+        completed += 1
+      } else {
+        queued += 1
+      }
+    } catch (error) {
+      failed += 1
+      ElMessage.error(`${file.name} 导入失败：${error instanceof Error ? error.message : '未知错误'}`)
+    }
+  }
+
+  selectedFiles.value = []
+  uploadRef.value?.clearFiles()
+  if (failed > 0) {
+    ElMessage.warning(`批量导入完成：${completed} 个已入库，${queued} 个已创建任务，${failed} 个失败`)
+  } else {
+    ElMessage.success(`批量导入完成：${completed} 个已入库，${queued} 个已创建任务`)
+  }
   await refreshImports()
   recordPage.value = 1
   gisPage.value = 1
@@ -506,11 +538,18 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                   </el-select>
                 </el-form-item>
               </el-form>
-              <el-upload class="upload" drag :auto-upload="false" :limit="1" :on-change="onFileChange">
+              <el-upload ref="uploadRef" class="upload" drag multiple :auto-upload="false" :on-change="onFileChange">
                 <el-icon class="upload-icon"><UploadFilled /></el-icon>
                 <div>拖入或点击选择 csv、xlsx、geojson、json、txt、docx、pdf</div>
               </el-upload>
-              <el-button type="primary" class="full" :disabled="!selectedDatasetId" @click="uploadFile">提交导入</el-button>
+              <el-button
+                type="primary"
+                class="full"
+                :disabled="!selectedDatasetId || selectedFiles.length === 0"
+                @click="uploadFile"
+              >
+                {{ selectedFiles.length > 1 ? `批量导入 ${selectedFiles.length} 个文件` : '提交导入' }}
+              </el-button>
             </section>
           </el-col>
 
