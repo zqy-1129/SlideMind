@@ -173,6 +173,23 @@ body {
   border-radius: 6px;
 }
 
+.graph-task {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #f8fafb;
+  border: 1px solid #e2e8ec;
+  border-radius: 6px;
+}
+
+.graph-task-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 13px;
+}
+
 .empty {
   display: grid;
   height: 200px;

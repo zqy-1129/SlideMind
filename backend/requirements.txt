@@ -1,5 +1,7 @@
 celery==5.4.0
 fastapi==0.115.6
+geopandas==1.0.1
+joblib==1.4.2
 motor==3.6.0
 neo4j==5.27.0
 numpy==2.2.1
@@ -12,5 +14,7 @@ pypdf==5.1.0
 python-docx==1.1.2
 python-multipart==0.0.20
 redis==5.2.1
+scipy==1.14.1
+shapely==2.0.6
+tqdm==4.67.1
 uvicorn[standard]==0.34.0
-

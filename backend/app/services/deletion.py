@@ -24,6 +24,7 @@ async def delete_dataset_cascade(dataset_id: str) -> dict[str, Any]:
         "documents": (await database.documents.delete_many({"dataset_id": dataset_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"dataset_id": dataset_id})).deleted_count,
         "gis_features": (await database.gis_features.delete_many({"dataset_id": dataset_id})).deleted_count,
+        "graph_tasks": (await database.graph_tasks.delete_many({"dataset_id": dataset_id})).deleted_count,
         "qa_records": (await database.qa_records.delete_many({"dataset_id": dataset_id})).deleted_count,
     }
 

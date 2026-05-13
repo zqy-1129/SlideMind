@@ -1,18 +1,49 @@
-from fastapi import APIRouter
+from datetime import datetime
 
-from app.models.schemas import GraphBuildRequest, GraphOut
-from app.services.graph_builder import build_graph_for_dataset, read_graph
+from bson import ObjectId
+from fastapi import APIRouter, HTTPException
+
+from app.db.mongo import get_db
+from app.models.schemas import GraphBuildOut, GraphBuildRequest, GraphOut, GraphTaskOut
+from app.services.graph_builder import read_graph
+from app.services.graph_tasks import build_graph_task
+from app.utils.ids import oid, stringify_id
 
 router = APIRouter()
 
 
-@router.post("/graph/build")
+@router.post("/graph/build", response_model=GraphBuildOut)
 async def build_graph(payload: GraphBuildRequest) -> dict:
-    summary = await build_graph_for_dataset(payload.dataset_id)
-    return {"status": "ok", **summary}
+    dataset = await get_db().datasets.find_one({"_id": ObjectId(payload.dataset_id)})
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    task_id = oid()
+    now = datetime.utcnow()
+    await get_db().graph_tasks.insert_one(
+        {
+            "_id": ObjectId(task_id),
+            "dataset_id": payload.dataset_id,
+            "status": "queued",
+            "progress": 0,
+            "logs": ["图谱生成任务已创建"],
+            "summary": {},
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    build_graph_task.delay(task_id)
+    return {"task_id": task_id, "status": "queued", "message": "Graph build queued"}
+
+
+@router.get("/graph/tasks/{task_id}", response_model=GraphTaskOut)
+async def get_graph_task(task_id: str) -> dict:
+    task = await get_db().graph_tasks.find_one({"_id": ObjectId(task_id)})
+    if task is None:
+        raise HTTPException(status_code=404, detail="Graph task not found")
+    return stringify_id(task)
 
 
 @router.get("/graph", response_model=GraphOut)
-async def get_graph(dataset_id: str | None = None, limit: int = 120) -> dict:
+async def get_graph(dataset_id: str | None = None, limit: int = 500) -> dict:
     return read_graph(dataset_id=dataset_id, limit=limit)
-

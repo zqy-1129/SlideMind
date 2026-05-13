@@ -23,6 +23,7 @@ import {
   type GisFeature,
   type GraphEdge,
   type GraphNode,
+  type GraphTask,
   type ImportTask,
   type TabularRecord
 } from './api/client'
@@ -56,6 +57,8 @@ const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
+let graphPollTimer: number | null = null
+const graphTask = ref<GraphTask | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -64,6 +67,8 @@ const dataLoading = ref(false)
 const selectedDataset = computed(() => datasets.value.find((item) => item.id === selectedDatasetId.value))
 const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].includes(dataView.value))
 const isGisView = computed(() => dataView.value === 'gis_vector')
+const graphBuilding = computed(() => graphTask.value?.status === 'queued' || graphTask.value?.status === 'running')
+const graphTaskLastLog = computed(() => graphTask.value?.logs?.at(-1) || '')
 
 const dataViewLabel = computed(() => {
   const labels: Record<DataView, string> = {
@@ -369,9 +374,52 @@ async function buildGraph() {
     ElMessage.warning('请先选择数据集')
     return
   }
-  const summary = await api.buildGraph(selectedDatasetId.value)
-  ElMessage.success(`已为当前数据集生成图谱：${summary.monitor_points || 0} 个监测点`)
-  await refreshGraph()
+  const task = await api.buildGraph(selectedDatasetId.value)
+  graphTask.value = {
+    id: task.task_id,
+    dataset_id: selectedDatasetId.value,
+    status: task.status,
+    progress: 0,
+    logs: [task.message],
+    summary: {},
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
+  ElMessage.success('图谱生成任务已创建')
+  startGraphPolling(task.task_id)
+}
+
+function startGraphPolling(taskId: string) {
+  clearGraphPolling()
+  const poll = async () => {
+    try {
+      const task = await api.getGraphTask(taskId)
+      graphTask.value = task
+      if (task.status === 'completed') {
+        ElMessage.success('图谱生成完成')
+        await refreshGraph()
+        clearGraphPolling()
+        return
+      }
+      if (task.status === 'failed') {
+        ElMessage.error(task.error || graphTaskLastLog.value || '图谱生成失败')
+        clearGraphPolling()
+        return
+      }
+      graphPollTimer = window.setTimeout(poll, 1500)
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '图谱任务状态获取失败')
+      clearGraphPolling()
+    }
+  }
+  graphPollTimer = window.setTimeout(poll, 600)
+}
+
+function clearGraphPolling() {
+  if (graphPollTimer !== null) {
+    window.clearTimeout(graphPollTimer)
+    graphPollTimer = null
+  }
 }
 
 async function refreshGraph() {
@@ -460,7 +508,10 @@ function renderGraph() {
 }
 
 onMounted(refreshAll)
-onBeforeUnmount(() => chart?.dispose())
+onBeforeUnmount(() => {
+  clearGraphPolling()
+  chart?.dispose()
+})
 watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
 </script>
 
@@ -754,7 +805,18 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <div class="panel-title">
                 <el-icon><Connection /></el-icon>
                 <span>知识图谱：{{ selectedDataset?.name || '未选择数据集' }}</span>
-                <el-button size="small" type="primary" :disabled="!selectedDatasetId" @click="buildGraph">生成</el-button>
+                <el-button size="small" type="primary" :loading="graphBuilding" :disabled="!selectedDatasetId" @click="buildGraph">
+                  生成
+                </el-button>
+              </div>
+              <div v-if="graphTask" class="graph-task">
+                <div class="graph-task-row">
+                  <el-tag size="small" :type="graphTask.status === 'completed' ? 'success' : graphTask.status === 'failed' ? 'danger' : 'info'">
+                    {{ graphTask.status }}
+                  </el-tag>
+                  <span>{{ graphTaskLastLog || '等待任务日志' }}</span>
+                </div>
+                <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
               </div>
               <div class="graph-box">
                 <div v-if="graphNodes.length === 0" class="empty">当前数据集暂无图谱节点</div>

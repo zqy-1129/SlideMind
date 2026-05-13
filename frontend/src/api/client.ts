@@ -33,6 +33,24 @@ export interface GraphEdge {
   properties: Record<string, unknown>
 }
 
+export interface GraphBuildTask {
+  task_id: string
+  status: string
+  message: string
+}
+
+export interface GraphTask {
+  id: string
+  dataset_id: string
+  status: string
+  progress: number
+  logs: string[]
+  summary: Record<string, unknown>
+  error?: string
+  created_at: string
+  updated_at: string
+}
+
 export interface Answer {
   answer: string
   route: string
@@ -164,13 +182,14 @@ export const api = {
     return request<PageResult<GisFeature>>(`/gis-features?${params.toString()}`)
   },
   buildGraph: (datasetId: string) =>
-    request<Record<string, number | string>>('/graph/build', {
+    request<GraphBuildTask>('/graph/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dataset_id: datasetId })
     }),
+  getGraphTask: (taskId: string) => request<GraphTask>(`/graph/tasks/${taskId}`),
   getGraph: (datasetId?: string) =>
-    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(datasetId ? `/graph?dataset_id=${datasetId}` : '/graph'),
+    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(datasetId ? `/graph?dataset_id=${datasetId}&limit=500` : '/graph?limit=500'),
   ask: (question: string, datasetId?: string) =>
     request<Answer>('/qa', {
       method: 'POST',

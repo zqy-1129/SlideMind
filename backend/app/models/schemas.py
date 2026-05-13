@@ -64,6 +64,24 @@ class GraphBuildRequest(BaseModel):
     dataset_id: str
 
 
+class GraphBuildOut(BaseModel):
+    task_id: str
+    status: str
+    message: str
+
+
+class GraphTaskOut(BaseModel):
+    id: str
+    dataset_id: str
+    status: str
+    progress: int = 0
+    logs: list[str] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class GraphNode(BaseModel):
     id: str
     label: str

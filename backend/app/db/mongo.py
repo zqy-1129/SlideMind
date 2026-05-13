@@ -36,6 +36,7 @@ async def ensure_indexes() -> None:
     await database.gis_features.create_index(
         [("dataset_id", 1), ("gis_category", 1), ("source_file_id", 1), ("feature_index", 1)]
     )
+    await database.graph_tasks.create_index([("dataset_id", 1), ("created_at", -1)])
     await database.qa_records.create_index("created_at")
     await database.users.create_index("username", unique=True)
     await database.sessions.create_index("token", unique=True)
