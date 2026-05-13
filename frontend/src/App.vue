@@ -61,9 +61,10 @@ let graphPollTimer: number | null = null
 const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
-const graphLimit = ref(50)
-const graphLayoutMode = ref<'hierarchy' | 'force'>('hierarchy')
-const collapsedGraphNodeIds = ref<Set<string>>(new Set())
+const graphLimit = ref(20)
+const expandedGraphNodeIds = ref<Set<string>>(new Set())
+const loadedGraphNodeIds = ref<Set<string>>(new Set())
+const loadingGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
@@ -445,12 +446,16 @@ async function refreshGraph() {
     graphNodes.value = []
     graphEdges.value = []
     graphNodeTypes.value = []
+    expandedGraphNodeIds.value = new Set()
+    loadedGraphNodeIds.value = new Set()
     return
   }
   const graph = await api.getGraph(selectedDatasetId.value, graphLimit.value, graphNodeType.value || undefined)
   graphNodes.value = graph.nodes
   graphEdges.value = graph.edges
-  collapsedGraphNodeIds.value = new Set()
+  const rootIds = graph.nodes.filter((node) => isDatasetNode(node)).map((node) => node.id)
+  expandedGraphNodeIds.value = new Set(rootIds)
+  loadedGraphNodeIds.value = new Set(rootIds)
   selectedGraphNode.value = null
   await refreshGraphNodeTypes()
   await nextTick()
@@ -501,38 +506,60 @@ function selectChunk(row: DocumentChunk) {
   selectedChunkId.value = row.id
 }
 
-function isHierarchyEdge(edge: GraphEdge) {
-  const label = edge.label || ''
-  const relationType = String(edge.properties?.relation_type || '')
-  return label === 'HAS_ENTITY' || label === 'CONTAINS' || label.includes('包含') || relationType.includes('集合')
+function mergeGraph(nextGraph: { nodes: GraphNode[]; edges: GraphEdge[] }) {
+  const nodeMap = new Map(graphNodes.value.map((node) => [node.id, node]))
+  nextGraph.nodes.forEach((node) => nodeMap.set(node.id, node))
+  graphNodes.value = [...nodeMap.values()]
+
+  const edgeMap = new Map(graphEdges.value.map((edge) => [edge.id, edge]))
+  nextGraph.edges.forEach((edge) => edgeMap.set(edge.id, edge))
+  graphEdges.value = [...edgeMap.values()]
 }
 
-function buildHierarchyGraph() {
+function isDatasetNode(node: GraphNode) {
+  return node.id.startsWith('dataset:') || node.properties?.source_kind === 'dataset'
+}
+
+async function expandGraphNode(nodeId: string) {
+  if (!selectedDatasetId.value || loadingGraphNodeIds.value.has(nodeId)) return
+  if (!loadedGraphNodeIds.value.has(nodeId)) {
+    const loadingNext = new Set(loadingGraphNodeIds.value)
+    loadingNext.add(nodeId)
+    loadingGraphNodeIds.value = loadingNext
+    try {
+      const graph = await api.getGraph(selectedDatasetId.value, graphLimit.value, undefined, nodeId)
+      mergeGraph(graph)
+      const loadedNext = new Set(loadedGraphNodeIds.value)
+      loadedNext.add(nodeId)
+      loadedGraphNodeIds.value = loadedNext
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '节点展开失败')
+    } finally {
+      const loadingDone = new Set(loadingGraphNodeIds.value)
+      loadingDone.delete(nodeId)
+      loadingGraphNodeIds.value = loadingDone
+    }
+  }
+  const expandedNext = new Set(expandedGraphNodeIds.value)
+  expandedNext.add(nodeId)
+  expandedGraphNodeIds.value = expandedNext
+  await nextTick()
+  renderGraph()
+}
+
+function collapseGraphNode(nodeId: string) {
+  const expandedNext = new Set(expandedGraphNodeIds.value)
+  expandedNext.delete(nodeId)
+  expandedGraphNodeIds.value = expandedNext
+  nextTick(renderGraph)
+}
+
+function buildTreeGraph() {
   const nodeMap = new Map(graphNodes.value.map((node) => [node.id, node]))
-  const rootIds = graphNodes.value
-    .filter((node) => node.type === '数据集' || node.id.startsWith('dataset:'))
-    .map((node) => node.id)
-  const rootId = rootIds[0] || graphNodes.value[0]?.id
-  const preferredParent = new Map<string, GraphEdge>()
-  const datasetEdges: GraphEdge[] = []
-
-  graphEdges.value.forEach((edge) => {
-    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target) || !isHierarchyEdge(edge)) return
-    if (edge.label === 'HAS_ENTITY') {
-      datasetEdges.push(edge)
-    } else if (!preferredParent.has(edge.target)) {
-      preferredParent.set(edge.target, edge)
-    }
-  })
-
-  datasetEdges.forEach((edge) => {
-    if (!preferredParent.has(edge.target) && edge.target !== rootId) {
-      preferredParent.set(edge.target, edge)
-    }
-  })
-
+  const rootIds = graphNodes.value.filter((node) => isDatasetNode(node)).map((node) => node.id)
+  const rootId = rootIds[0]
   const children = new Map<string, string[]>()
-  const treeEdges = [...preferredParent.values()]
+  const treeEdges = graphEdges.value.filter((edge) => nodeMap.has(edge.source) && nodeMap.has(edge.target))
   treeEdges.forEach((edge) => {
     const list = children.get(edge.source) || []
     list.push(edge.target)
@@ -545,14 +572,15 @@ function buildHierarchyGraph() {
     if (!nodeMap.has(nodeId) || visibleIds.has(nodeId)) return
     visibleIds.add(nodeId)
     levels.set(nodeId, level)
-    if (collapsedGraphNodeIds.value.has(nodeId)) return
-    ;(children.get(nodeId) || []).forEach((childId) => visit(childId, level + 1))
+    if (!expandedGraphNodeIds.value.has(nodeId)) return
+    ;(children.get(nodeId) || [])
+      .filter((childId) => childId !== nodeId)
+      .slice(0, graphLimit.value)
+      .forEach((childId) => visit(childId, level + 1))
   }
 
   if (rootId) visit(rootId, 0)
-  graphNodes.value.forEach((node) => {
-    if (!visibleIds.has(node.id)) visit(node.id, 1)
-  })
+  if (!rootId) graphNodes.value.forEach((node) => visit(node.id, 0))
 
   const visibleNodes = graphNodes.value.filter((node) => visibleIds.has(node.id))
   const levelGroups = new Map<number, GraphNode[]>()
@@ -565,10 +593,10 @@ function buildHierarchyGraph() {
 
   const positions = new Map<string, { x: number; y: number }>()
   levelGroups.forEach((nodes, level) => {
-    const gap = 170
+    const gap = 190
     const start = -((nodes.length - 1) * gap) / 2
     nodes.forEach((node, index) => {
-      positions.set(node.id, { x: start + index * gap, y: level * 140 })
+      positions.set(node.id, { x: start + index * gap, y: level * 150 })
     })
   })
 
@@ -587,22 +615,18 @@ function renderGraph() {
   chart.on('click', (params) => {
     const data = params.data as { id?: string } | undefined
     if (params.dataType === 'node' && data?.id) {
-      selectedGraphNode.value = graphNodes.value.find((node) => node.id === String(data.id)) || null
-      if (graphLayoutMode.value === 'hierarchy') {
-        const next = new Set(collapsedGraphNodeIds.value)
-        if (next.has(data.id)) {
-          next.delete(data.id)
-        } else {
-          next.add(data.id)
-        }
-        collapsedGraphNodeIds.value = next
-        nextTick(renderGraph)
+      const clickedNode = graphNodes.value.find((node) => node.id === String(data.id)) || null
+      selectedGraphNode.value = clickedNode
+      if (expandedGraphNodeIds.value.has(data.id) && clickedNode && !isDatasetNode(clickedNode)) {
+        collapseGraphNode(data.id)
+      } else {
+        void expandGraphNode(data.id)
       }
     }
   })
-  const hierarchy = graphLayoutMode.value === 'hierarchy' ? buildHierarchyGraph() : null
-  const visibleNodes = hierarchy?.nodes || graphNodes.value
-  const visibleEdges = hierarchy?.edges || graphEdges.value
+  const hierarchy = buildTreeGraph()
+  const visibleNodes = hierarchy.nodes
+  const visibleEdges = hierarchy.edges
   const categories = Array.from(new Set(visibleNodes.map((node) => node.type))).map((name, index) => ({
     name,
     itemStyle: { color: graphTypeColors[index % graphTypeColors.length] }
@@ -619,11 +643,10 @@ function renderGraph() {
     series: [
       {
         type: 'graph',
-        layout: graphLayoutMode.value === 'hierarchy' ? 'none' : 'force',
+        layout: 'none',
         roam: true,
         draggable: true,
         categories,
-        force: graphLayoutMode.value === 'hierarchy' ? undefined : { repulsion: 520, edgeLength: [140, 260], gravity: 0.05, friction: 0.25 },
         label: { show: true, position: 'right', overflow: 'truncate', width: 150 },
         edgeLabel: { show: visibleNodes.length <= 80, formatter: '{c}', fontSize: 10 },
         data: visibleNodes.map((node) => ({
@@ -631,7 +654,7 @@ function renderGraph() {
           name: node.label,
           category: categoryIndex.get(node.type) ?? 0,
           value: node.type,
-          symbolSize: node.type === '数据集' ? 62 : node.type.includes('集合') ? 46 : 36,
+          symbolSize: isDatasetNode(node) ? 62 : node.type.includes('集合') ? 46 : 36,
           ...(hierarchy?.positions.get(node.id) || {})
         })),
         links: visibleEdges.map((edge) => ({
@@ -961,15 +984,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-option label="全部节点类型" value="" />
               <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
             </el-select>
-            <el-input-number v-model="graphLimit" :min="10" :max="1000" :step="10" @change="refreshGraph" />
-            <el-segmented
-              v-model="graphLayoutMode"
-              :options="[
-                { label: '层级展开', value: 'hierarchy' },
-                { label: '力导向', value: 'force' }
-              ]"
-              @change="renderGraph"
-            />
+            <el-input-number v-model="graphLimit" aria-label="每次展开节点数" :min="1" :max="100" :step="5" @change="refreshGraph" />
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
           </div>
           <div class="graph-workspace">
@@ -990,7 +1005,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-empty v-else description="点击图谱节点查看内容" />
             </aside>
           </div>
-          <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系，当前上限 {{ graphLimit }} 个节点</div>
+          <div class="edge-summary">{{ graphNodes.length }} 个已加载节点，{{ graphEdges.length }} 条关系，每次展开最多 {{ graphLimit }} 个关联节点</div>
         </section>
 
         <section class="panel qa-panel">

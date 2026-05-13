@@ -202,7 +202,7 @@ body {
 
 .graph-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px 190px auto;
+  grid-template-columns: minmax(180px, 1fr) 140px auto;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;

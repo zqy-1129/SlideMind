@@ -16,9 +16,19 @@ async def build_graph_for_dataset(dataset_id: str, log: ProgressLogger | None = 
     return summary
 
 
-def read_graph(dataset_id: str | None = None, limit: int = 50, node_type: str | None = None) -> dict[str, list[dict[str, Any]]]:
+def read_graph(
+    dataset_id: str | None = None,
+    limit: int = 20,
+    node_type: str | None = None,
+    parent_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     driver = get_driver()
     safe_limit = min(max(limit, 1), 1000)
+    if parent_id:
+        return _read_graph_children(driver, dataset_id, parent_id, safe_limit)
+    if dataset_id and not node_type:
+        return _read_graph_roots(driver, dataset_id, safe_limit)
+
     node_query = """
     MATCH (n)
     WHERE ($dataset_id IS NULL OR n.dataset_id = $dataset_id)
@@ -64,6 +74,104 @@ def read_graph(dataset_id: str | None = None, limit: int = 50, node_type: str | 
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
+def _read_graph_roots(driver: Driver, dataset_id: str, limit: int) -> dict[str, list[dict[str, Any]]]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: dict[str, dict[str, Any]] = {}
+    query = """
+    MATCH (d:DatasetGraph {dataset_id: $dataset_id})
+    OPTIONAL MATCH (d)-[r:HAS_ENTITY]->(child:Area)
+    RETURN d, r, child
+    ORDER BY coalesce(child.name, '')
+    LIMIT $limit
+    """
+    fallback_query = """
+    MATCH (d:DatasetGraph {dataset_id: $dataset_id})
+    OPTIONAL MATCH (d)-[r:HAS_ENTITY]->(child)
+    WHERE child.dataset_id = $dataset_id
+    RETURN d, r, child
+    ORDER BY coalesce(child.scale_level, 99), coalesce(child.entity_type, ''), coalesce(child.name, '')
+    LIMIT $limit
+    """
+    with driver.session() as session:
+        result = list(session.run(query, dataset_id=dataset_id, limit=limit))
+        child_count = sum(1 for row in result if row["child"] is not None)
+        if child_count == 0:
+            result = list(session.run(fallback_query, dataset_id=dataset_id, limit=limit))
+        for row in result:
+            _add_node(nodes, row["d"])
+            if row["child"] is not None and row["r"] is not None:
+                _add_node(nodes, row["child"])
+                _add_edge(edges, row["d"], row["r"], row["child"])
+    return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
+def _read_graph_children(driver: Driver, dataset_id: str | None, parent_id: str, limit: int) -> dict[str, list[dict[str, Any]]]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: dict[str, dict[str, Any]] = {}
+    dataset_filter = "AND child.dataset_id = $dataset_id" if dataset_id else ""
+    parent_filter = "AND parent.dataset_id = $dataset_id" if dataset_id else ""
+    dataset_child_filter = "AND other.dataset_id = $dataset_id" if dataset_id else ""
+    root_query = f"""
+    MATCH (parent:DatasetGraph {{id: $parent_id}})
+    OPTIONAL MATCH (parent)-[r:HAS_ENTITY]->(child:Area)
+    WHERE child IS NULL OR true {dataset_filter}
+    RETURN parent, r, child
+    ORDER BY coalesce(child.name, '')
+    LIMIT $limit
+    """
+    contains_query = f"""
+    MATCH (parent {{id: $parent_id}})
+    WHERE true {parent_filter}
+    OPTIONAL MATCH (parent)-[r:CONTAINS]->(child)
+    WHERE child IS NULL OR true {dataset_filter}
+    RETURN parent, r, child
+    ORDER BY
+      CASE
+        WHEN child.entity_type CONTAINS '交通' THEN 0
+        WHEN child.entity_type CONTAINS '水' THEN 1
+        WHEN child.entity_type CONTAINS '建筑' THEN 2
+        ELSE 9
+      END,
+      coalesce(child.entity_type, ''),
+      coalesce(child.name, '')
+    LIMIT $limit
+    """
+    related_query = f"""
+    MATCH (parent {{id: $parent_id}})
+    WHERE true {parent_filter}
+    OPTIONAL MATCH (parent)-[r]-(other)
+    WHERE other IS NULL OR (type(r) <> 'HAS_ENTITY' {dataset_child_filter})
+    RETURN parent, r, other AS child
+    ORDER BY type(r), coalesce(other.entity_type, ''), coalesce(other.name, '')
+    LIMIT $limit
+    """
+    with driver.session() as session:
+        result = list(session.run(root_query, dataset_id=dataset_id, parent_id=parent_id, limit=limit))
+        if not result:
+            result = list(session.run(contains_query, dataset_id=dataset_id, parent_id=parent_id, limit=limit))
+        if _result_child_count(result) == 0:
+            result = list(session.run(contains_query, dataset_id=dataset_id, parent_id=parent_id, limit=limit))
+        if _result_child_count(result) == 0:
+            related_rows = list(session.run(related_query, dataset_id=dataset_id, parent_id=parent_id, limit=limit))
+            for row in related_rows:
+                _add_node(nodes, row["parent"])
+                if row["child"] is not None and row["r"] is not None:
+                    _add_node(nodes, row["child"])
+                    _add_edge(edges, row["parent"], row["r"], row["child"])
+            return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+        for row in result:
+            _add_node(nodes, row["parent"])
+            if row["child"] is not None and row["r"] is not None:
+                _add_node(nodes, row["child"])
+                _add_edge(edges, row["parent"], row["r"], row["child"])
+    return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
+def _result_child_count(rows: list[Any]) -> int:
+    return sum(1 for row in rows if row["child"] is not None)
+
+
 def read_graph_node_types(dataset_id: str | None = None) -> list[str]:
     driver = get_driver()
     query = """
@@ -84,6 +192,23 @@ def _graph_node(node: Any, node_id: str) -> dict[str, Any]:
         "label": node.get("name") or node_id,
         "type": node.get("entity_type") or (labels[0] if labels else "Entity"),
         "properties": dict(node),
+    }
+
+
+def _add_node(nodes: dict[str, dict[str, Any]], node: Any) -> str:
+    node_id = node.get("id") or str(node.element_id)
+    nodes[node_id] = _graph_node(node, node_id)
+    return node_id
+
+
+def _add_edge(edges: dict[str, dict[str, Any]], source: Any, rel: Any, target: Any) -> None:
+    edge_id = rel.get("id") or str(rel.element_id)
+    edges[edge_id] = {
+        "id": edge_id,
+        "source": source.get("id") or str(source.element_id),
+        "target": target.get("id") or str(target.element_id),
+        "label": rel.get("content") or rel.type,
+        "properties": dict(rel),
     }
 
 

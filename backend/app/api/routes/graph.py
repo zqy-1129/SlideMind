@@ -45,8 +45,13 @@ async def get_graph_task(task_id: str) -> dict:
 
 
 @router.get("/graph", response_model=GraphOut)
-async def get_graph(dataset_id: str | None = None, limit: int = 50, node_type: str | None = None) -> dict:
-    return read_graph(dataset_id=dataset_id, limit=limit, node_type=node_type)
+async def get_graph(
+    dataset_id: str | None = None,
+    limit: int = 20,
+    node_type: str | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    return read_graph(dataset_id=dataset_id, limit=limit, node_type=node_type, parent_id=parent_id)
 
 
 @router.get("/graph/node-types")
