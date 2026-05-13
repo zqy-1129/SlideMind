@@ -188,8 +188,15 @@ export const api = {
       body: JSON.stringify({ dataset_id: datasetId })
     }),
   getGraphTask: (taskId: string) => request<GraphTask>(`/graph/tasks/${taskId}`),
-  getGraph: (datasetId?: string) =>
-    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(datasetId ? `/graph?dataset_id=${datasetId}&limit=500` : '/graph?limit=500'),
+  getGraph: (datasetId?: string, limit = 50, nodeType?: string) => {
+    const params = new URLSearchParams()
+    if (datasetId) params.set('dataset_id', datasetId)
+    params.set('limit', String(limit))
+    if (nodeType) params.set('node_type', nodeType)
+    return request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/graph?${params.toString()}`)
+  },
+  getGraphNodeTypes: (datasetId?: string) =>
+    request<{ types: string[] }>(datasetId ? `/graph/node-types?dataset_id=${datasetId}` : '/graph/node-types'),
   ask: (question: string, datasetId?: string) =>
     request<Answer>('/qa', {
       method: 'POST',

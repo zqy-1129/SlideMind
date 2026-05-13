@@ -14,15 +14,17 @@ from app.db.mongo import get_db
 ProgressLogger = Callable[[str, int], Awaitable[None]]
 
 GIS_CATEGORY_TYPES = {
-    "area": {"name": "行政区", "label": "Area", "collection": "行政区_集合"},
-    "build": {"name": "建筑", "label": "Building", "collection": "建筑_集合"},
-    "traffic": {"name": "交通", "label": "Traffic", "collection": "交通_集合"},
-    "water": {"name": "水域", "label": "Water", "collection": "水域_集合"},
-    "other": {"name": "其他", "label": "OtherGISFeature", "collection": "其他_集合"},
+    "area": {"name": "\u884c\u653f\u533a", "label": "Area", "collection": "\u884c\u653f\u533a_\u96c6\u5408"},
+    "build": {"name": "\u5efa\u7b51", "label": "Building", "collection": "\u5efa\u7b51_\u96c6\u5408"},
+    "traffic": {"name": "\u4ea4\u901a", "label": "Traffic", "collection": "\u4ea4\u901a_\u96c6\u5408"},
+    "water": {"name": "\u6c34\u57df", "label": "Water", "collection": "\u6c34\u57df_\u96c6\u5408"},
+    "other": {"name": "\u5176\u4ed6", "label": "OtherGISFeature", "collection": "\u5176\u4ed6_\u96c6\u5408"},
 }
-INSAR_TYPE = "InSAR沉降监测点"
-NAME_FIELD_PRIORITY = ["name", "NAME", "Name", "编码", "id", "ID"]
-KRIGING_CONFIG = {"neighbor_k": 128, "min_weight_threshold": 0.1, "bandwidth": 0.003}
+INSAR_TYPE = "InSAR\u6c89\u964d\u76d1\u6d4b\u70b9"
+NAME_FIELD_PRIORITY = ["name", "NAME", "Name", "\u7f16\u7801", "id", "ID"]
+KRIGING_CONFIG = {"neighbor_k": 12, "min_weight_threshold": 0.1, "bandwidth": 0.003}
+SPATIAL_RELATION_LIMIT = 20_000
+KRIGING_RELATION_LIMIT = 20_000
 LARGE_ENTITY_THRESHOLD = {"LineString": 5000, "Polygon": 1_000_000}
 LARGE_ENTITY_ANCHOR_NUM = {"LineString": 3, "Polygon": 4}
 
@@ -173,7 +175,7 @@ def _gis_document_to_entity(dataset_id: str, document: dict[str, Any]) -> dict[s
         "__id__": _make_id("gis", dataset_id, str(document["_id"])),
         "__created_at__": _timestamp(),
         "entity_name": entity_name,
-        "type": document.get("gis_category_name") or config["name"],
+        "type": config["name"],
         "geom_type": _geom_type_from_geojson(geometry),
         "geometry": geometry,
         "attributes": properties,
@@ -250,8 +252,22 @@ def _append_spatial_relations(kg: dict[str, Any], include_insar: bool) -> None:
             continue
         shape_rows.append({"entity": entity, "geometry": geometry})
 
+    if len(shape_rows) < 2:
+        return
+
+    from shapely.strtree import STRtree
+
+    geometries = [row["geometry"] for row in shape_rows]
+    tree = STRtree(geometries)
+    relation_count = 0
+
     for index, left in enumerate(shape_rows):
-        for right in shape_rows[index + 1 :]:
+        candidate_indexes = tree.query(left["geometry"])
+        for candidate_index in candidate_indexes:
+            right_index = int(candidate_index)
+            if right_index <= index:
+                continue
+            right = shape_rows[right_index]
             content = _spatial_relation_content(left["geometry"], right["geometry"])
             if not content:
                 continue
@@ -260,6 +276,11 @@ def _append_spatial_relations(kg: dict[str, Any], include_insar: bool) -> None:
             if key not in existing_keys:
                 kg["relations"].append(relation)
                 existing_keys.add(key)
+                relation_count += 1
+                if relation_count >= SPATIAL_RELATION_LIMIT:
+                    kg["meta"]["spatial_relation_limited"] = True
+                    kg["meta"]["spatial_relation_limit"] = SPATIAL_RELATION_LIMIT
+                    return
 
 
 def _calculate_kriging_relations(insar_entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -310,6 +331,8 @@ def _calculate_kriging_relations(insar_entities: list[dict[str, Any]]) -> list[d
                     "is_nearest_neighbor": True,
                 }
             )
+            if len(relations) >= KRIGING_RELATION_LIMIT:
+                return relations
     return relations
 
 

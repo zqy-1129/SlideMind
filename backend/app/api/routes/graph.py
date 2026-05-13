@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.db.mongo import get_db
 from app.models.schemas import GraphBuildOut, GraphBuildRequest, GraphOut, GraphTaskOut
-from app.services.graph_builder import read_graph
+from app.services.graph_builder import read_graph, read_graph_node_types
 from app.services.graph_tasks import build_graph_task
 from app.utils.ids import oid, stringify_id
 
@@ -45,5 +45,10 @@ async def get_graph_task(task_id: str) -> dict:
 
 
 @router.get("/graph", response_model=GraphOut)
-async def get_graph(dataset_id: str | None = None, limit: int = 500) -> dict:
-    return read_graph(dataset_id=dataset_id, limit=limit)
+async def get_graph(dataset_id: str | None = None, limit: int = 50, node_type: str | None = None) -> dict:
+    return read_graph(dataset_id=dataset_id, limit=limit, node_type=node_type)
+
+
+@router.get("/graph/node-types")
+async def get_graph_node_types(dataset_id: str | None = None) -> dict:
+    return {"types": read_graph_node_types(dataset_id=dataset_id)}

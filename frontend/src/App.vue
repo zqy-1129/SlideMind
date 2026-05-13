@@ -59,6 +59,9 @@ const graphCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
 const graphTask = ref<GraphTask | null>(null)
+const graphNodeTypes = ref<string[]>([])
+const graphNodeType = ref('')
+const graphLimit = ref(50)
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -426,13 +429,24 @@ async function refreshGraph() {
   if (!selectedDatasetId.value) {
     graphNodes.value = []
     graphEdges.value = []
+    graphNodeTypes.value = []
     return
   }
-  const graph = await api.getGraph(selectedDatasetId.value)
+  const graph = await api.getGraph(selectedDatasetId.value, graphLimit.value, graphNodeType.value || undefined)
   graphNodes.value = graph.nodes
   graphEdges.value = graph.edges
+  await refreshGraphNodeTypes()
   await nextTick()
   renderGraph()
+}
+
+async function refreshGraphNodeTypes() {
+  if (!selectedDatasetId.value) return
+  const result = await api.getGraphNodeTypes(selectedDatasetId.value)
+  graphNodeTypes.value = result.types
+  if (graphNodeType.value && !graphNodeTypes.value.includes(graphNodeType.value)) {
+    graphNodeType.value = ''
+  }
 }
 
 async function ask() {
@@ -818,11 +832,19 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 </div>
                 <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
               </div>
+              <div class="graph-controls">
+                <el-select v-model="graphNodeType" placeholder="全部节点类型" clearable @change="refreshGraph">
+                  <el-option label="全部节点类型" value="" />
+                  <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
+                </el-select>
+                <el-input-number v-model="graphLimit" :min="10" :max="1000" :step="10" @change="refreshGraph" />
+                <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
+              </div>
               <div class="graph-box">
                 <div v-if="graphNodes.length === 0" class="empty">当前数据集暂无图谱节点</div>
                 <div ref="graphCanvas" class="graph-canvas" />
               </div>
-              <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系</div>
+              <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系，当前上限 {{ graphLimit }} 个节点</div>
             </section>
           </el-col>
 

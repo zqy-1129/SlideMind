@@ -190,6 +190,14 @@ body {
   font-size: 13px;
 }
 
+.graph-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 140px auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
 .empty {
   display: grid;
   height: 200px;
@@ -247,5 +255,9 @@ body {
   .el-col {
     max-width: 100%;
     flex: 0 0 100%;
+  }
+
+  .graph-controls {
+    grid-template-columns: 1fr;
   }
 }
