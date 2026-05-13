@@ -188,12 +188,18 @@ async function deleteCurrentDataset() {
 
 function onFileChange(file: { raw?: File }) {
   selectedFile.value = file.raw || null
+  if (selectedFile.value && isGisFile(selectedFile.value.name)) {
+    uploadDataType.value = 'gis_vector'
+  }
 }
 
 async function uploadFile() {
   if (!selectedDatasetId.value || !selectedFile.value) {
     ElMessage.warning('请选择数据集和文件')
     return
+  }
+  if (isGisFile(selectedFile.value.name)) {
+    uploadDataType.value = 'gis_vector'
   }
   const result = await api.uploadFile(
     selectedDatasetId.value,
@@ -207,6 +213,11 @@ async function uploadFile() {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
+}
+
+function isGisFile(filename: string) {
+  const suffix = filename.toLowerCase().split('.').pop()
+  return suffix === 'geojson' || suffix === 'json'
 }
 
 async function retryImport(taskId: string) {
