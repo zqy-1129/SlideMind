@@ -24,7 +24,7 @@ def read_graph(dataset_id: str | None = None, limit: int = 50, node_type: str | 
     WHERE ($dataset_id IS NULL OR n.dataset_id = $dataset_id)
       AND ($node_type IS NULL OR n.entity_type = $node_type)
     RETURN n
-    ORDER BY coalesce(n.entity_type, ''), coalesce(n.name, '')
+    ORDER BY CASE WHEN n:DatasetGraph THEN 0 ELSE 1 END, coalesce(n.entity_type, ''), coalesce(n.name, '')
     LIMIT $limit
     """
 

@@ -31,6 +31,7 @@ LARGE_ENTITY_ANCHOR_NUM = {"LineString": 3, "Polygon": 4}
 
 async def build_spatial_kg_from_mongo(dataset_id: str, log: ProgressLogger | None = None) -> dict[str, Any]:
     await _log(log, "读取 MongoDB 中的 GIS 与 InSAR 数据", 5)
+    dataset = await get_db().datasets.find_one({"_id": ObjectId(dataset_id)})
     gis_docs = [
         document
         async for document in get_db()
@@ -44,7 +45,7 @@ async def build_spatial_kg_from_mongo(dataset_id: str, log: ProgressLogger | Non
     ]
 
     await _log(log, f"读取完成：GIS 要素 {len(gis_docs)} 个，InSAR 记录 {len(insar_records)} 条", 12)
-    kg = _build_base_space_kg(dataset_id, gis_docs)
+    kg = _build_base_space_kg(dataset_id, gis_docs, dataset.get("name") if dataset else dataset_id)
     await _log(log, f"基础空间图谱生成完成：{len(kg['entities'])} 个实体，{len(kg['relations'])} 条关系", 35)
 
     kg = _add_anchors_to_kg(kg)
@@ -84,7 +85,7 @@ def write_kg_to_neo4j(driver: Driver, dataset_id: str, kg: dict[str, Any]) -> di
     }
 
 
-def _build_base_space_kg(dataset_id: str, gis_docs: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_base_space_kg(dataset_id: str, gis_docs: list[dict[str, Any]], dataset_name: str) -> dict[str, Any]:
     entities: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
     area_entries: list[dict[str, Any]] = []
@@ -109,10 +110,15 @@ def _build_base_space_kg(dataset_id: str, gis_docs: list[dict[str, Any]]) -> dic
         admin_name, admin_id = _admin_area_info(geometry, area_entries)
         entity["admin_belong"] = admin_name
         entity["admin_entity_id"] = admin_id
-        if not _has_explicit_name(entity["attributes"]):
+        if _is_weak_entity_name(entity["entity_name"]):
             category = entity["type"]
             sequence_by_category[f"{admin_name}:{category}"] += 1
-            entity["entity_name"] = f"{admin_name}_{category}_{sequence_by_category[f'{admin_name}:{category}']}"
+            entity["entity_name"] = _fallback_entity_name(
+                entity["attributes"],
+                category,
+                admin_name,
+                sequence_by_category[f"{admin_name}:{category}"],
+            )
         feature_groups[(entity["entity_name"], entity["type"])].append(entity)
 
     for (_, _), group in feature_groups.items():
@@ -156,6 +162,7 @@ def _build_base_space_kg(dataset_id: str, gis_docs: list[dict[str, Any]]) -> dic
         "relations": relations,
         "meta": {
             "dataset_id": dataset_id,
+            "dataset_name": dataset_name,
             "generated_at": datetime.utcnow().isoformat(),
             "gis_feature_count": len(gis_docs),
             "area_feature_count": len(area_docs),
@@ -170,7 +177,7 @@ def _gis_document_to_entity(dataset_id: str, document: dict[str, Any]) -> dict[s
     config = GIS_CATEGORY_TYPES.get(category, GIS_CATEGORY_TYPES["other"])
     geometry = document.get("geometry")
     properties = document.get("properties") or {}
-    entity_name = _extract_entity_name(properties, document.get("layer_name"), document.get("feature_index"))
+    entity_name = _extract_entity_name(properties, document.get("layer_name"), document.get("feature_index"), config["name"])
     return {
         "__id__": _make_id("gis", dataset_id, str(document["_id"])),
         "__created_at__": _timestamp(),
@@ -408,7 +415,7 @@ def _merge_dataset_root(tx, dataset_id: str, meta: dict[str, Any]) -> None:
             d.meta_json = $meta_json
         """,
         id=f"dataset:{dataset_id}",
-        name=f"数据集 {dataset_id}",
+        name=meta.get("dataset_name") or f"数据集 {dataset_id}",
         dataset_id=dataset_id,
         meta_json=json.dumps(meta, ensure_ascii=False, default=str),
     )
@@ -634,16 +641,64 @@ def _semantic_tag(entity: dict[str, Any]) -> str:
     return f"{entity.get('type', '未知要素')}-{entity.get('entity_name', '未知')}"
 
 
-def _extract_entity_name(properties: dict[str, Any], layer_name: str | None, feature_index: int | None) -> str:
-    for field in NAME_FIELD_PRIORITY:
+def _extract_entity_name(
+    properties: dict[str, Any],
+    layer_name: str | None,
+    feature_index: int | None,
+    entity_type: str | None = None,
+) -> str:
+    for field in _name_fields(properties):
         value = properties.get(field)
-        if value not in (None, ""):
-            return str(value).strip()
+        name = _clean_name_value(value, entity_type)
+        if name:
+            return name
     return f"{layer_name or 'GIS要素'}_{feature_index or 1}"
 
 
 def _has_explicit_name(properties: dict[str, Any]) -> bool:
-    return any(properties.get(field) not in (None, "") for field in NAME_FIELD_PRIORITY)
+    return any(_clean_name_value(properties.get(field)) for field in _name_fields(properties))
+
+
+def _name_fields(properties: dict[str, Any]) -> list[str]:
+    dynamic = sorted(
+        [key for key in properties if "name" in str(key).lower() or str(key) in {"名称", "名字", "地名"}],
+        key=lambda key: (0 if str(key).lower() == "name" else 1, str(key)),
+    )
+    return list(dict.fromkeys(NAME_FIELD_PRIORITY + dynamic))
+
+
+def _clean_name_value(value: Any, entity_type: str | None = None) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text or _is_weak_entity_name(text):
+        return None
+    parts = [part.strip() for part in re.split(r"[,，;；/、]", text) if part.strip()]
+    parts = [part for part in parts if not _is_weak_entity_name(part)]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    if entity_type:
+        return f"{parts[0]}等{len(parts)}处{entity_type}"
+    return "、".join(parts[:4])
+
+
+def _is_weak_entity_name(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    compact = re.sub(r"[\s,，;；/、._-]+", "", text)
+    return compact.isdigit() or bool(re.fullmatch(r"[0-9A-Fa-f]{8,}", compact))
+
+
+def _fallback_entity_name(properties: dict[str, Any], entity_type: str, admin_name: str, sequence: int) -> str:
+    for field in ("name_1", "name_2", "name", "NAME", "Name"):
+        name = _clean_name_value(properties.get(field), entity_type)
+        if name:
+            return name if entity_type in name else f"{name}_{entity_type}"
+    base = admin_name if admin_name and admin_name != "未知区域" else "未知区域"
+    return f"{base}_{entity_type}_{sequence}"
 
 
 def _shape_or_none(geometry: dict[str, Any] | None) -> Any:

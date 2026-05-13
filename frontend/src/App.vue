@@ -62,6 +62,8 @@ const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
 const graphLimit = ref(50)
+const graphLayoutMode = ref<'hierarchy' | 'force'>('hierarchy')
+const collapsedGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
@@ -448,6 +450,8 @@ async function refreshGraph() {
   const graph = await api.getGraph(selectedDatasetId.value, graphLimit.value, graphNodeType.value || undefined)
   graphNodes.value = graph.nodes
   graphEdges.value = graph.edges
+  collapsedGraphNodeIds.value = new Set()
+  selectedGraphNode.value = null
   await refreshGraphNodeTypes()
   await nextTick()
   renderGraph()
@@ -497,6 +501,85 @@ function selectChunk(row: DocumentChunk) {
   selectedChunkId.value = row.id
 }
 
+function isHierarchyEdge(edge: GraphEdge) {
+  const label = edge.label || ''
+  const relationType = String(edge.properties?.relation_type || '')
+  return label === 'HAS_ENTITY' || label === 'CONTAINS' || label.includes('包含') || relationType.includes('集合')
+}
+
+function buildHierarchyGraph() {
+  const nodeMap = new Map(graphNodes.value.map((node) => [node.id, node]))
+  const rootIds = graphNodes.value
+    .filter((node) => node.type === '数据集' || node.id.startsWith('dataset:'))
+    .map((node) => node.id)
+  const rootId = rootIds[0] || graphNodes.value[0]?.id
+  const preferredParent = new Map<string, GraphEdge>()
+  const datasetEdges: GraphEdge[] = []
+
+  graphEdges.value.forEach((edge) => {
+    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target) || !isHierarchyEdge(edge)) return
+    if (edge.label === 'HAS_ENTITY') {
+      datasetEdges.push(edge)
+    } else if (!preferredParent.has(edge.target)) {
+      preferredParent.set(edge.target, edge)
+    }
+  })
+
+  datasetEdges.forEach((edge) => {
+    if (!preferredParent.has(edge.target) && edge.target !== rootId) {
+      preferredParent.set(edge.target, edge)
+    }
+  })
+
+  const children = new Map<string, string[]>()
+  const treeEdges = [...preferredParent.values()]
+  treeEdges.forEach((edge) => {
+    const list = children.get(edge.source) || []
+    list.push(edge.target)
+    children.set(edge.source, list)
+  })
+
+  const visibleIds = new Set<string>()
+  const levels = new Map<string, number>()
+  const visit = (nodeId: string, level: number) => {
+    if (!nodeMap.has(nodeId) || visibleIds.has(nodeId)) return
+    visibleIds.add(nodeId)
+    levels.set(nodeId, level)
+    if (collapsedGraphNodeIds.value.has(nodeId)) return
+    ;(children.get(nodeId) || []).forEach((childId) => visit(childId, level + 1))
+  }
+
+  if (rootId) visit(rootId, 0)
+  graphNodes.value.forEach((node) => {
+    if (!visibleIds.has(node.id)) visit(node.id, 1)
+  })
+
+  const visibleNodes = graphNodes.value.filter((node) => visibleIds.has(node.id))
+  const levelGroups = new Map<number, GraphNode[]>()
+  visibleNodes.forEach((node) => {
+    const level = levels.get(node.id) ?? 1
+    const group = levelGroups.get(level) || []
+    group.push(node)
+    levelGroups.set(level, group)
+  })
+
+  const positions = new Map<string, { x: number; y: number }>()
+  levelGroups.forEach((nodes, level) => {
+    const gap = 170
+    const start = -((nodes.length - 1) * gap) / 2
+    nodes.forEach((node, index) => {
+      positions.set(node.id, { x: start + index * gap, y: level * 140 })
+    })
+  })
+
+  return {
+    nodes: visibleNodes,
+    edges: treeEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    positions,
+    children
+  }
+}
+
 function renderGraph() {
   if (!graphCanvas.value) return
   chart ||= echarts.init(graphCanvas.value)
@@ -505,9 +588,22 @@ function renderGraph() {
     const data = params.data as { id?: string } | undefined
     if (params.dataType === 'node' && data?.id) {
       selectedGraphNode.value = graphNodes.value.find((node) => node.id === String(data.id)) || null
+      if (graphLayoutMode.value === 'hierarchy') {
+        const next = new Set(collapsedGraphNodeIds.value)
+        if (next.has(data.id)) {
+          next.delete(data.id)
+        } else {
+          next.add(data.id)
+        }
+        collapsedGraphNodeIds.value = next
+        nextTick(renderGraph)
+      }
     }
   })
-  const categories = Array.from(new Set(graphNodes.value.map((node) => node.type))).map((name, index) => ({
+  const hierarchy = graphLayoutMode.value === 'hierarchy' ? buildHierarchyGraph() : null
+  const visibleNodes = hierarchy?.nodes || graphNodes.value
+  const visibleEdges = hierarchy?.edges || graphEdges.value
+  const categories = Array.from(new Set(visibleNodes.map((node) => node.type))).map((name, index) => ({
     name,
     itemStyle: { color: graphTypeColors[index % graphTypeColors.length] }
   }))
@@ -523,21 +619,22 @@ function renderGraph() {
     series: [
       {
         type: 'graph',
-        layout: 'force',
+        layout: graphLayoutMode.value === 'hierarchy' ? 'none' : 'force',
         roam: true,
         draggable: true,
         categories,
-        force: { repulsion: 520, edgeLength: [140, 260], gravity: 0.05, friction: 0.25 },
+        force: graphLayoutMode.value === 'hierarchy' ? undefined : { repulsion: 520, edgeLength: [140, 260], gravity: 0.05, friction: 0.25 },
         label: { show: true, position: 'right', overflow: 'truncate', width: 150 },
-        edgeLabel: { show: graphNodes.value.length <= 80, formatter: '{c}', fontSize: 10 },
-        data: graphNodes.value.map((node) => ({
+        edgeLabel: { show: visibleNodes.length <= 80, formatter: '{c}', fontSize: 10 },
+        data: visibleNodes.map((node) => ({
           id: node.id,
           name: node.label,
           category: categoryIndex.get(node.type) ?? 0,
           value: node.type,
-          symbolSize: node.type === '数据集' ? 62 : node.type.includes('集合') ? 46 : 36
+          symbolSize: node.type === '数据集' ? 62 : node.type.includes('集合') ? 46 : 36,
+          ...(hierarchy?.positions.get(node.id) || {})
         })),
-        links: graphEdges.value.map((edge) => ({
+        links: visibleEdges.map((edge) => ({
           source: edge.source,
           target: edge.target,
           value: edge.label
@@ -865,6 +962,14 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
             </el-select>
             <el-input-number v-model="graphLimit" :min="10" :max="1000" :step="10" @change="refreshGraph" />
+            <el-segmented
+              v-model="graphLayoutMode"
+              :options="[
+                { label: '层级展开', value: 'hierarchy' },
+                { label: '力导向', value: 'force' }
+              ]"
+              @change="renderGraph"
+            />
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
           </div>
           <div class="graph-workspace">
