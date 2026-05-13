@@ -33,7 +33,9 @@ async def ensure_indexes() -> None:
     await database.tabular_records.create_index([("dataset_id", 1), ("data_type", 1), ("timestamp", 1)])
     await database.documents.create_index("dataset_id")
     await database.document_chunks.create_index([("dataset_id", 1), ("source_file_id", 1)])
-    await database.gis_features.create_index([("dataset_id", 1), ("source_file_id", 1), ("feature_index", 1)])
+    await database.gis_features.create_index(
+        [("dataset_id", 1), ("gis_category", 1), ("source_file_id", 1), ("feature_index", 1)]
+    )
     await database.qa_records.create_index("created_at")
     await database.users.create_index("username", unique=True)
     await database.sessions.create_index("token", unique=True)

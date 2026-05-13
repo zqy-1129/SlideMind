@@ -48,6 +48,7 @@ const selectedChunkId = ref('')
 const datasetName = ref('')
 const datasetDescription = ref('')
 const uploadDataType = ref('insar')
+const uploadGisCategory = ref('area')
 const dataView = ref<DataView>('insar')
 const selectedFile = ref<File | null>(null)
 const graphNodes = ref<GraphNode[]>([])
@@ -194,7 +195,12 @@ async function uploadFile() {
     ElMessage.warning('请选择数据集和文件')
     return
   }
-  const result = await api.uploadFile(selectedDatasetId.value, uploadDataType.value, selectedFile.value)
+  const result = await api.uploadFile(
+    selectedDatasetId.value,
+    uploadDataType.value,
+    selectedFile.value,
+    uploadDataType.value === 'gis_vector' ? uploadGisCategory.value : undefined
+  )
   selectedFile.value = null
   ElMessage.success(result.status === 'completed' ? '数据已入库' : '导入任务已创建')
   await refreshImports()
@@ -478,6 +484,17 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                   { label: '文本', value: 'document' }
                 ]"
               />
+              <el-form v-if="uploadDataType === 'gis_vector'" label-position="top" class="inline-form">
+                <el-form-item label="GIS图层类别">
+                  <el-select v-model="uploadGisCategory">
+                    <el-option label="行政区 area" value="area" />
+                    <el-option label="建筑 build" value="build" />
+                    <el-option label="交通 traffic" value="traffic" />
+                    <el-option label="水域 water" value="water" />
+                    <el-option label="其他 other" value="other" />
+                  </el-select>
+                </el-form-item>
+              </el-form>
               <el-upload class="upload" drag :auto-upload="false" :limit="1" :on-change="onFileChange">
                 <el-icon class="upload-icon"><UploadFilled /></el-icon>
                 <div>拖入或点击选择 csv、xlsx、geojson、json、txt、docx、pdf</div>
@@ -495,6 +512,9 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               </div>
               <el-table :data="imports" height="280" size="small" empty-text="当前数据集暂无导入任务">
                 <el-table-column prop="data_type" label="类型" width="110" />
+                <el-table-column label="GIS类别" width="110">
+                  <template #default="{ row }">{{ row.gis_category || '-' }}</template>
+                </el-table-column>
                 <el-table-column prop="status" label="状态" width="110">
                   <template #default="{ row }">
                     <el-tag :type="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : 'info'">
@@ -596,6 +616,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               empty-text="当前数据集暂无GIS矢量数据"
             >
               <el-table-column prop="feature_index" label="序号" width="80" />
+              <el-table-column prop="gis_category_name" label="类别" width="110" />
               <el-table-column prop="layer_name" label="图层" min-width="160" show-overflow-tooltip />
               <el-table-column prop="geometry_type" label="几何类型" width="120" />
               <el-table-column label="中心点" min-width="170">

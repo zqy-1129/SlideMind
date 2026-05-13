@@ -106,6 +106,10 @@ body {
   margin: 16px 0;
 }
 
+.inline-form {
+  margin-top: 12px;
+}
+
 .upload-icon {
   font-size: 32px;
   color: #166a5b;

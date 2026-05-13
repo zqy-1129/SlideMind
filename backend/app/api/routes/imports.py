@@ -19,6 +19,7 @@ router = APIRouter()
 async def create_import(
     dataset_id: str = Form(...),
     data_type: str = Form(...),
+    gis_category: str | None = Form(default=None),
     file: UploadFile = File(...),
 ) -> dict:
     dataset = await get_db().datasets.find_one({"_id": ObjectId(dataset_id)})
@@ -31,6 +32,7 @@ async def create_import(
     stored_path = settings.upload_dir / f"{file_id}{suffix}"
     stored_path.write_bytes(await file.read())
     now = datetime.utcnow()
+    normalized_gis_category = gis_category if data_type == "gis_vector" else None
 
     await get_db().uploaded_files.insert_one(
         {
@@ -40,6 +42,7 @@ async def create_import(
             "content_type": file.content_type,
             "path": str(stored_path),
             "data_type": data_type,
+            "gis_category": normalized_gis_category,
             "created_at": now,
         }
     )
@@ -49,6 +52,7 @@ async def create_import(
             "file_id": file_id,
             "dataset_id": dataset_id,
             "data_type": data_type,
+            "gis_category": normalized_gis_category,
             "status": "queued",
             "error_rows": [],
             "logs": ["Import task created"],

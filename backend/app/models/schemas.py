@@ -53,6 +53,7 @@ class ImportTaskOut(BaseModel):
     dataset_id: str
     status: str
     data_type: str
+    gis_category: str | None = None
     error_rows: list[dict[str, Any]] = Field(default_factory=list)
     logs: list[str] = Field(default_factory=list)
     created_at: datetime

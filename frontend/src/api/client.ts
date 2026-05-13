@@ -11,6 +11,7 @@ export interface ImportTask {
   dataset_id: string
   status: string
   data_type: string
+  gis_category?: string
   logs: string[]
   error_rows: Record<string, unknown>[]
   created_at: string
@@ -83,6 +84,8 @@ export interface GisFeature {
   source_file_id: string
   feature_index: number
   data_type: string
+  gis_category?: string
+  gis_category_name?: string
   layer_name?: string
   geometry_type?: string
   properties: Record<string, unknown>
@@ -115,10 +118,11 @@ export const api = {
     request<Record<string, unknown>>(`/datasets/${datasetId}`, {
       method: 'DELETE'
     }),
-  uploadFile: (datasetId: string, dataType: string, file: File) => {
+  uploadFile: (datasetId: string, dataType: string, file: File, gisCategory?: string) => {
     const formData = new FormData()
     formData.append('dataset_id', datasetId)
     formData.append('data_type', dataType)
+    if (gisCategory) formData.append('gis_category', gisCategory)
     formData.append('file', file)
     return request<{ task_id: string; file_id: string; status: string; message: string }>('/imports', {
       method: 'POST',

@@ -21,6 +21,14 @@ from app.services.parsers import (
 from app.utils.ids import oid
 from app.utils.mongo_values import clean_for_mongo
 
+GIS_CATEGORY_NAMES = {
+    "area": "行政区",
+    "build": "建筑",
+    "traffic": "交通",
+    "water": "水域",
+    "other": "其他",
+}
+
 
 async def run_ingestion(task_id: str) -> None:
     database = get_db()
@@ -153,6 +161,8 @@ async def _ingest_gis_vector(task: dict, file_doc: dict) -> int:
     await get_db().gis_features.delete_many({"source_file_id": source_file_id})
     geojson = parse_geojson(file_doc["path"])
     layer_name = geojson.get("name") or file_doc.get("filename") or "未命名图层"
+    gis_category = task.get("gis_category") or file_doc.get("gis_category") or "other"
+    gis_category_name = GIS_CATEGORY_NAMES.get(gis_category, "其他")
     features = geojson_features(geojson)
 
     documents = []
@@ -165,6 +175,8 @@ async def _ingest_gis_vector(task: dict, file_doc: dict) -> int:
                 "source_file_id": source_file_id,
                 "feature_index": index,
                 "data_type": "gis_vector",
+                "gis_category": gis_category,
+                "gis_category_name": gis_category_name,
                 "layer_name": layer_name,
                 "geometry_type": geometry.get("type") if isinstance(geometry, dict) else None,
                 "properties": properties,

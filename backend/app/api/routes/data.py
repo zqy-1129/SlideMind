@@ -56,10 +56,15 @@ async def list_document_chunks(dataset_id: str | None = None, limit: int = 1000)
 @router.get("/gis-features")
 async def list_gis_features(
     dataset_id: str | None = None,
+    gis_category: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
-    query = {"dataset_id": dataset_id} if dataset_id else {}
+    query: dict[str, Any] = {}
+    if dataset_id:
+        query["dataset_id"] = dataset_id
+    if gis_category:
+        query["gis_category"] = gis_category
     safe_page = max(page, 1)
     safe_page_size = min(max(page_size, 1), 100)
     total = await get_db().gis_features.count_documents(query)
