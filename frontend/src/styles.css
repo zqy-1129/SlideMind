@@ -164,8 +164,18 @@ body {
   white-space: pre-wrap;
 }
 
+.graph-panel {
+  min-height: 680px;
+}
+
+.graph-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 12px;
+}
+
 .graph-box {
-  min-height: 232px;
+  min-height: 520px;
   padding: 12px;
   overflow: auto;
   background: #f8fafb;
@@ -207,13 +217,39 @@ body {
 
 .graph-canvas {
   width: 100%;
-  height: 220px;
+  height: 500px;
 }
 
 .edge-summary {
   margin-top: 10px;
   color: #64748b;
   font-size: 13px;
+}
+
+.node-detail {
+  min-height: 520px;
+  padding: 12px;
+  overflow: auto;
+  background: #f8fafb;
+  border: 1px solid #e2e8ec;
+  border-radius: 6px;
+}
+
+.node-detail-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.node-detail h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.node-detail .json-preview {
+  margin-top: 12px;
 }
 
 .qa-panel .el-textarea {
@@ -259,5 +295,13 @@ body {
 
   .graph-controls {
     grid-template-columns: 1fr;
+  }
+
+  .graph-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .node-detail {
+    min-height: 260px;
   }
 }

@@ -62,6 +62,7 @@ const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
 const graphLimit = ref(50)
+const selectedGraphNode = ref<GraphNode | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -72,6 +73,18 @@ const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].include
 const isGisView = computed(() => dataView.value === 'gis_vector')
 const graphBuilding = computed(() => graphTask.value?.status === 'queued' || graphTask.value?.status === 'running')
 const graphTaskLastLog = computed(() => graphTask.value?.logs?.at(-1) || '')
+const graphTypeColors = [
+  '#166a5b',
+  '#d97706',
+  '#2563eb',
+  '#9333ea',
+  '#dc2626',
+  '#0891b2',
+  '#65a30d',
+  '#be123c',
+  '#475569',
+  '#7c3aed'
+]
 
 const dataViewLabel = computed(() => {
   const labels: Record<DataView, string> = {
@@ -487,10 +500,26 @@ function selectChunk(row: DocumentChunk) {
 function renderGraph() {
   if (!graphCanvas.value) return
   chart ||= echarts.init(graphCanvas.value)
-  const categories = Array.from(new Set(graphNodes.value.map((node) => node.type))).map((name) => ({ name }))
+  chart.off('click')
+  chart.on('click', (params) => {
+    const data = params.data as { id?: string } | undefined
+    if (params.dataType === 'node' && data?.id) {
+      selectedGraphNode.value = graphNodes.value.find((node) => node.id === String(data.id)) || null
+    }
+  })
+  const categories = Array.from(new Set(graphNodes.value.map((node) => node.type))).map((name, index) => ({
+    name,
+    itemStyle: { color: graphTypeColors[index % graphTypeColors.length] }
+  }))
+  const categoryIndex = new Map(categories.map((category, index) => [category.name, index]))
   chart.setOption({
-    tooltip: {},
-    legend: [{ data: categories.map((item) => item.name), bottom: 0 }],
+    tooltip: {
+      formatter: (params: { dataType?: string; data?: { name?: string; category?: string }; value?: string }) => {
+        if (params.dataType === 'edge') return params.value || ''
+        return `${params.data?.name || ''}<br/>${params.data?.category || ''}`
+      }
+    },
+    legend: [{ data: categories.map((item) => item.name), bottom: 0, type: 'scroll' }],
     series: [
       {
         type: 'graph',
@@ -498,22 +527,22 @@ function renderGraph() {
         roam: true,
         draggable: true,
         categories,
-        force: { repulsion: 180, edgeLength: 90 },
-        label: { show: true, position: 'right', overflow: 'truncate', width: 120 },
-        edgeLabel: { show: true, formatter: '{c}', fontSize: 10 },
+        force: { repulsion: 520, edgeLength: [140, 260], gravity: 0.05, friction: 0.25 },
+        label: { show: true, position: 'right', overflow: 'truncate', width: 150 },
+        edgeLabel: { show: graphNodes.value.length <= 80, formatter: '{c}', fontSize: 10 },
         data: graphNodes.value.map((node) => ({
           id: node.id,
           name: node.label,
-          category: node.type,
+          category: categoryIndex.get(node.type) ?? 0,
           value: node.type,
-          symbolSize: node.type === 'Landslide' ? 54 : 38
+          symbolSize: node.type === '数据集' ? 62 : node.type.includes('集合') ? 46 : 36
         })),
         links: graphEdges.value.map((edge) => ({
           source: edge.source,
           target: edge.target,
           value: edge.label
         })),
-        lineStyle: { color: '#7a8f98', curveness: 0.16 },
+        lineStyle: { color: '#94a3b8', opacity: 0.58, curveness: 0.18 },
         emphasis: { focus: 'adjacency' }
       }
     ]
@@ -813,62 +842,70 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
       </template>
 
       <template v-else>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <section class="panel">
-              <div class="panel-title">
-                <el-icon><Connection /></el-icon>
-                <span>知识图谱：{{ selectedDataset?.name || '未选择数据集' }}</span>
-                <el-button size="small" type="primary" :loading="graphBuilding" :disabled="!selectedDatasetId" @click="buildGraph">
-                  生成
-                </el-button>
+        <section class="panel graph-panel">
+          <div class="panel-title">
+            <el-icon><Connection /></el-icon>
+            <span>知识图谱：{{ selectedDataset?.name || '未选择数据集' }}</span>
+            <el-button size="small" type="primary" :loading="graphBuilding" :disabled="!selectedDatasetId" @click="buildGraph">
+              生成
+            </el-button>
+          </div>
+          <div v-if="graphTask" class="graph-task">
+            <div class="graph-task-row">
+              <el-tag size="small" :type="graphTask.status === 'completed' ? 'success' : graphTask.status === 'failed' ? 'danger' : 'info'">
+                {{ graphTask.status }}
+              </el-tag>
+              <span>{{ graphTaskLastLog || '等待任务日志' }}</span>
+            </div>
+            <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
+          </div>
+          <div class="graph-controls">
+            <el-select v-model="graphNodeType" placeholder="全部节点类型" clearable @change="refreshGraph">
+              <el-option label="全部节点类型" value="" />
+              <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
+            </el-select>
+            <el-input-number v-model="graphLimit" :min="10" :max="1000" :step="10" @change="refreshGraph" />
+            <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
+          </div>
+          <div class="graph-workspace">
+            <div class="graph-box">
+              <div v-if="graphNodes.length === 0" class="empty">当前数据集暂无图谱节点</div>
+              <div ref="graphCanvas" class="graph-canvas" />
+            </div>
+            <aside class="node-detail">
+              <div class="node-detail-title">
+                <el-icon><Tickets /></el-icon>
+                <span>节点详情</span>
               </div>
-              <div v-if="graphTask" class="graph-task">
-                <div class="graph-task-row">
-                  <el-tag size="small" :type="graphTask.status === 'completed' ? 'success' : graphTask.status === 'failed' ? 'danger' : 'info'">
-                    {{ graphTask.status }}
-                  </el-tag>
-                  <span>{{ graphTaskLastLog || '等待任务日志' }}</span>
-                </div>
-                <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
-              </div>
-              <div class="graph-controls">
-                <el-select v-model="graphNodeType" placeholder="全部节点类型" clearable @change="refreshGraph">
-                  <el-option label="全部节点类型" value="" />
-                  <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
-                </el-select>
-                <el-input-number v-model="graphLimit" :min="10" :max="1000" :step="10" @change="refreshGraph" />
-                <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
-              </div>
-              <div class="graph-box">
-                <div v-if="graphNodes.length === 0" class="empty">当前数据集暂无图谱节点</div>
-                <div ref="graphCanvas" class="graph-canvas" />
-              </div>
-              <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系，当前上限 {{ graphLimit }} 个节点</div>
-            </section>
-          </el-col>
+              <template v-if="selectedGraphNode">
+                <h3>{{ selectedGraphNode.label }}</h3>
+                <el-tag>{{ selectedGraphNode.type }}</el-tag>
+                <pre class="json-preview">{{ JSON.stringify(selectedGraphNode.properties, null, 2) }}</pre>
+              </template>
+              <el-empty v-else description="点击图谱节点查看内容" />
+            </aside>
+          </div>
+          <div class="edge-summary">{{ graphNodes.length }} 个节点，{{ graphEdges.length }} 条关系，当前上限 {{ graphLimit }} 个节点</div>
+        </section>
 
-          <el-col :span="12">
-            <section class="panel qa-panel">
-              <div class="panel-title">
-                <el-icon><ChatDotRound /></el-icon>
-                <span>智能问答</span>
-              </div>
-              <el-input
-                v-model="question"
-                type="textarea"
-                :rows="4"
-                placeholder="例如：库水位变化是否和位移异常有关？"
-              />
-              <el-button type="primary" class="full" @click="ask">提问</el-button>
-              <div v-if="answer" class="answer">
-                <el-tag>{{ answer.route }}</el-tag>
-                <p>{{ answer.answer }}</p>
-                <pre>{{ JSON.stringify(answer.sources.slice(0, 3), null, 2) }}</pre>
-              </div>
-            </section>
-          </el-col>
-        </el-row>
+        <section class="panel qa-panel">
+          <div class="panel-title">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>智能问答</span>
+          </div>
+          <el-input
+            v-model="question"
+            type="textarea"
+            :rows="4"
+            placeholder="例如：库水位变化是否和位移异常有关？"
+          />
+          <el-button type="primary" class="full" @click="ask">提问</el-button>
+          <div v-if="answer" class="answer">
+            <el-tag>{{ answer.route }}</el-tag>
+            <p>{{ answer.answer }}</p>
+            <pre>{{ JSON.stringify(answer.sources.slice(0, 3), null, 2) }}</pre>
+          </div>
+        </section>
       </template>
     </el-main>
   </el-container>
