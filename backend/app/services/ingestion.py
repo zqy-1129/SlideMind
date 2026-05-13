@@ -7,7 +7,17 @@ from app.db.milvus import get_collection
 from app.db.mongo import get_db
 from app.services.embedding import embed_text
 from app.services.normalization import normalize_record
-from app.services.parsers import TABLE_EXTENSIONS, parse_table, parse_text, split_text
+from app.services.parsers import (
+    GIS_EXTENSIONS,
+    TABLE_EXTENSIONS,
+    geojson_features,
+    geometry_bbox,
+    geometry_centroid,
+    parse_geojson,
+    parse_table,
+    parse_text,
+    split_text,
+)
 from app.utils.ids import oid
 from app.utils.mongo_values import clean_for_mongo
 
@@ -26,7 +36,10 @@ async def run_ingestion(task_id: str) -> None:
     suffix = Path(path).suffix.lower()
 
     try:
-        if suffix in TABLE_EXTENSIONS:
+        if task["data_type"] == "gis_vector" or suffix in GIS_EXTENSIONS:
+            count = await _ingest_gis_vector(task, file_doc)
+            await _set_task_status(task_id, "completed", f"Imported {count} GIS features")
+        elif suffix in TABLE_EXTENSIONS:
             count = await _ingest_table(task, file_doc)
             await _set_task_status(task_id, "completed", f"Imported {count} table records")
         else:
@@ -133,6 +146,38 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
                 {"$push": {"logs": f"Milvus vector write skipped: {exc}"}},
             )
     return len(chunk_docs)
+
+
+async def _ingest_gis_vector(task: dict, file_doc: dict) -> int:
+    source_file_id = str(file_doc["_id"])
+    await get_db().gis_features.delete_many({"source_file_id": source_file_id})
+    geojson = parse_geojson(file_doc["path"])
+    layer_name = geojson.get("name") or file_doc.get("filename") or "未命名图层"
+    features = geojson_features(geojson)
+
+    documents = []
+    for index, feature in enumerate(features, start=1):
+        geometry = clean_for_mongo(feature.get("geometry"))
+        properties = clean_for_mongo(feature.get("properties") or {})
+        documents.append(
+            {
+                "dataset_id": task["dataset_id"],
+                "source_file_id": source_file_id,
+                "feature_index": index,
+                "data_type": "gis_vector",
+                "layer_name": layer_name,
+                "geometry_type": geometry.get("type") if isinstance(geometry, dict) else None,
+                "properties": properties,
+                "geometry": geometry,
+                "bbox": geometry_bbox(geometry),
+                "centroid": geometry_centroid(geometry),
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+    if documents:
+        await get_db().gis_features.insert_many(documents)
+    return len(documents)
 
 
 async def _set_task_status(task_id: str, status: str, log: str) -> None:

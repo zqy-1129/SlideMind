@@ -53,6 +53,31 @@ async def list_document_chunks(dataset_id: str | None = None, limit: int = 1000)
     return [stringify_id(document) async for document in cursor]
 
 
+@router.get("/gis-features")
+async def list_gis_features(
+    dataset_id: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    query = {"dataset_id": dataset_id} if dataset_id else {}
+    safe_page = max(page, 1)
+    safe_page_size = min(max(page_size, 1), 100)
+    total = await get_db().gis_features.count_documents(query)
+    cursor = (
+        get_db()
+        .gis_features.find(query)
+        .sort("feature_index", 1)
+        .skip((safe_page - 1) * safe_page_size)
+        .limit(safe_page_size)
+    )
+    return {
+        "items": [stringify_id(document) async for document in cursor],
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+    }
+
+
 @router.delete("/data")
 async def delete_data(dataset_id: str, data_kind: str) -> dict[str, Any]:
     if not dataset_id:

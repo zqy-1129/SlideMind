@@ -23,6 +23,7 @@ async def delete_dataset_cascade(dataset_id: str) -> dict[str, Any]:
         "tabular_records": (await database.tabular_records.delete_many({"dataset_id": dataset_id})).deleted_count,
         "documents": (await database.documents.delete_many({"dataset_id": dataset_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"dataset_id": dataset_id})).deleted_count,
+        "gis_features": (await database.gis_features.delete_many({"dataset_id": dataset_id})).deleted_count,
         "qa_records": (await database.qa_records.delete_many({"dataset_id": dataset_id})).deleted_count,
     }
 
@@ -60,6 +61,7 @@ async def delete_import_cascade(task_id: str) -> dict[str, Any]:
         "tabular_records": (await database.tabular_records.delete_many({"source_file_id": file_id})).deleted_count,
         "documents": (await database.documents.delete_many({"source_file_id": file_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"source_file_id": file_id})).deleted_count,
+        "gis_features": (await database.gis_features.delete_many({"source_file_id": file_id})).deleted_count,
     }
 
     removed_files = _remove_files([file_doc] if file_doc else [])
@@ -91,6 +93,27 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
             "file_ids": file_ids,
             "counts": {
                 "tabular_records": result.deleted_count,
+                "import_tasks": tasks.deleted_count,
+                "uploaded_files": uploaded.deleted_count,
+            },
+            "removed_files": removed_files,
+            "graph_deleted": graph_deleted,
+        }
+
+    if data_kind == "gis_vector":
+        files = [document async for document in database.uploaded_files.find({"dataset_id": dataset_id, "data_type": data_kind})]
+        file_ids = [str(document["_id"]) for document in files]
+        features = await database.gis_features.delete_many({"dataset_id": dataset_id})
+        tasks = await database.import_tasks.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
+        uploaded = await database.uploaded_files.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
+        removed_files = _remove_files(files)
+        graph_deleted = _delete_graph_dataset(dataset_id)
+        return {
+            "deleted": True,
+            "data_kind": data_kind,
+            "file_ids": file_ids,
+            "counts": {
+                "gis_features": features.deleted_count,
                 "import_tasks": tasks.deleted_count,
                 "uploaded_files": uploaded.deleted_count,
             },

@@ -77,6 +77,21 @@ export interface DocumentChunk {
   created_at: string
 }
 
+export interface GisFeature {
+  id: string
+  dataset_id: string
+  source_file_id: string
+  feature_index: number
+  data_type: string
+  layer_name?: string
+  geometry_type?: string
+  properties: Record<string, unknown>
+  geometry: Record<string, unknown>
+  bbox?: number[]
+  centroid?: Record<string, number>
+  created_at: string
+}
+
 const API_BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -137,6 +152,13 @@ export const api = {
     request<DocumentItem[]>(datasetId ? `/documents?dataset_id=${datasetId}&limit=1000` : '/documents?limit=1000'),
   listDocumentChunks: (datasetId?: string) =>
     request<DocumentChunk[]>(datasetId ? `/document-chunks?dataset_id=${datasetId}&limit=1000` : '/document-chunks?limit=1000'),
+  listGisFeatures: (datasetId?: string, page = 1, pageSize = 20) => {
+    const params = new URLSearchParams()
+    if (datasetId) params.set('dataset_id', datasetId)
+    params.set('page', String(page))
+    params.set('page_size', String(pageSize))
+    return request<PageResult<GisFeature>>(`/gis-features?${params.toString()}`)
+  },
   buildGraph: (datasetId: string) =>
     request<Record<string, number | string>>('/graph/build', {
       method: 'POST',

@@ -7,6 +7,7 @@ import {
   Delete,
   Document,
   FolderAdd,
+  Location,
   Refresh,
   Tickets,
   UploadFilled
@@ -19,6 +20,7 @@ import {
   type Dataset,
   type DocumentChunk,
   type DocumentItem,
+  type GisFeature,
   type GraphEdge,
   type GraphNode,
   type ImportTask,
@@ -26,7 +28,7 @@ import {
 } from './api/client'
 
 type AppPage = 'data' | 'analysis'
-type DataView = 'insar' | 'water_level' | 'rainfall' | 'documents' | 'chunks'
+type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
 
 const activePage = ref<AppPage>('data')
 const datasets = ref<Dataset[]>([])
@@ -35,6 +37,10 @@ const records = ref<TabularRecord[]>([])
 const recordTotal = ref(0)
 const recordPage = ref(1)
 const recordPageSize = ref(20)
+const gisFeatures = ref<GisFeature[]>([])
+const gisTotal = ref(0)
+const gisPage = ref(1)
+const gisPageSize = ref(20)
 const documents = ref<DocumentItem[]>([])
 const chunks = ref<DocumentChunk[]>([])
 const selectedDatasetId = ref('')
@@ -55,12 +61,14 @@ const dataLoading = ref(false)
 
 const selectedDataset = computed(() => datasets.value.find((item) => item.id === selectedDatasetId.value))
 const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].includes(dataView.value))
+const isGisView = computed(() => dataView.value === 'gis_vector')
 
 const dataViewLabel = computed(() => {
   const labels: Record<DataView, string> = {
     insar: 'InSAR数据',
     water_level: '库水位数据',
     rainfall: '降雨数据',
+    gis_vector: 'GIS矢量数据',
     documents: '文本资料',
     chunks: '文本切片'
   }
@@ -78,7 +86,6 @@ const recordRows = computed(() =>
       ...record.normalized_fields,
       raw_fields: record.raw_fields
     }
-
     const longitude = record.normalized_fields.longitude ?? record.raw_fields.lon ?? record.raw_fields.longitude
     const latitude = record.normalized_fields.latitude ?? record.raw_fields.lat ?? record.raw_fields.latitude
     delete row.lon
@@ -132,10 +139,13 @@ async function refreshAll() {
 
 async function refreshDatasetScope() {
   recordPage.value = 1
+  gisPage.value = 1
   if (!selectedDatasetId.value) {
     imports.value = []
     records.value = []
+    gisFeatures.value = []
     recordTotal.value = 0
+    gisTotal.value = 0
     documents.value = []
     chunks.value = []
     graphNodes.value = []
@@ -165,7 +175,7 @@ async function deleteCurrentDataset() {
     return
   }
   await ElMessageBox.confirm(
-    `确定删除数据集“${selectedDataset.value.name}”吗？该操作会同时删除其上传文件记录、表格数据、文本数据、问答记录和图谱节点。`,
+    `确定删除数据集“${selectedDataset.value.name}”吗？该操作会删除其全部数据、文件记录和图谱节点。`,
     '删除数据集',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
   )
@@ -189,6 +199,7 @@ async function uploadFile() {
   ElMessage.success(result.status === 'completed' ? '数据已入库' : '导入任务已创建')
   await refreshImports()
   recordPage.value = 1
+  gisPage.value = 1
   await refreshDataContent()
 }
 
@@ -197,6 +208,7 @@ async function retryImport(taskId: string) {
   ElMessage.success(result.status === 'completed' ? '数据已重新入库' : '已重新加入导入队列')
   await refreshImports()
   recordPage.value = 1
+  gisPage.value = 1
   await refreshDataContent()
 }
 
@@ -209,7 +221,6 @@ async function deleteImportTask(row: ImportTask) {
   await api.deleteImport(row.id)
   ElMessage.success('导入任务及相关数据已删除')
   await refreshImports()
-  recordPage.value = 1
   await refreshDataContent()
 }
 
@@ -226,6 +237,7 @@ async function deleteCurrentData() {
   await api.deleteData(selectedDatasetId.value, dataView.value)
   ElMessage.success('数据已删除')
   recordPage.value = 1
+  gisPage.value = 1
   await refreshDataContent()
   await refreshImports()
 }
@@ -247,13 +259,26 @@ async function refreshDataContent() {
       )
       records.value = page.items
       recordTotal.value = page.total
+      gisFeatures.value = []
+      documents.value = []
+      chunks.value = []
+      return
+    }
+
+    if (isGisView.value) {
+      const page = await api.listGisFeatures(selectedDatasetId.value, gisPage.value, gisPageSize.value)
+      gisFeatures.value = page.items
+      gisTotal.value = page.total
+      records.value = []
       documents.value = []
       chunks.value = []
       return
     }
 
     records.value = []
+    gisFeatures.value = []
     recordTotal.value = 0
+    gisTotal.value = 0
     if (dataView.value === 'documents') {
       documents.value = await api.listDocuments(selectedDatasetId.value)
       chunks.value = []
@@ -271,11 +296,17 @@ async function refreshDataContent() {
 
 async function changeDataView() {
   recordPage.value = 1
+  gisPage.value = 1
   await refreshDataContent()
 }
 
 async function changeRecordPage(page: number) {
   recordPage.value = page
+  await refreshDataContent()
+}
+
+async function changeGisPage(page: number) {
+  gisPage.value = page
   await refreshDataContent()
 }
 
@@ -443,12 +474,13 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                   { label: 'InSAR', value: 'insar' },
                   { label: '库水位', value: 'water_level' },
                   { label: '降雨', value: 'rainfall' },
+                  { label: 'GIS矢量', value: 'gis_vector' },
                   { label: '文本', value: 'document' }
                 ]"
               />
               <el-upload class="upload" drag :auto-upload="false" :limit="1" :on-change="onFileChange">
                 <el-icon class="upload-icon"><UploadFilled /></el-icon>
-                <div>拖入或点击选择 csv、xlsx、txt、docx、pdf</div>
+                <div>拖入或点击选择 csv、xlsx、geojson、json、txt、docx、pdf</div>
               </el-upload>
               <el-button type="primary" class="full" :disabled="!selectedDatasetId" @click="uploadFile">提交导入</el-button>
             </section>
@@ -462,7 +494,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 <el-button size="small" :icon="Refresh" @click="refreshImports">刷新</el-button>
               </div>
               <el-table :data="imports" height="280" size="small" empty-text="当前数据集暂无导入任务">
-                <el-table-column prop="data_type" label="类型" width="100" />
+                <el-table-column prop="data_type" label="类型" width="110" />
                 <el-table-column prop="status" label="状态" width="110">
                   <template #default="{ row }">
                     <el-tag :type="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : 'info'">
@@ -502,6 +534,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               { label: 'InSAR数据', value: 'insar' },
               { label: '库水位数据', value: 'water_level' },
               { label: '降雨数据', value: 'rainfall' },
+              { label: 'GIS矢量', value: 'gis_vector' },
               { label: '文本资料', value: 'documents' },
               { label: '文本切片', value: 'chunks' }
             ]"
@@ -549,6 +582,50 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 :page-size="recordPageSize"
                 :total="recordTotal"
                 @current-change="changeRecordPage"
+              />
+            </div>
+          </template>
+
+          <template v-else-if="isGisView">
+            <el-table
+              v-loading="dataLoading"
+              :data="gisFeatures"
+              height="360"
+              size="small"
+              border
+              empty-text="当前数据集暂无GIS矢量数据"
+            >
+              <el-table-column prop="feature_index" label="序号" width="80" />
+              <el-table-column prop="layer_name" label="图层" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="geometry_type" label="几何类型" width="120" />
+              <el-table-column label="中心点" min-width="170">
+                <template #default="{ row }">
+                  {{ row.centroid ? `${row.centroid.longitude.toFixed(6)}, ${row.centroid.latitude.toFixed(6)}` : '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="属性" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">{{ JSON.stringify(row.properties) }}</template>
+              </el-table-column>
+              <el-table-column label="空间对象" width="120" fixed="right">
+                <template #default="{ row }">
+                  <el-popover placement="left" width="560" trigger="click">
+                    <pre class="json-preview">{{ JSON.stringify({ properties: row.properties, geometry: row.geometry, bbox: row.bbox }, null, 2) }}</pre>
+                    <template #reference>
+                      <el-button size="small" :icon="Location">查看</el-button>
+                    </template>
+                  </el-popover>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="pagination-bar">
+              <span>共 {{ gisTotal }} 个要素，每页 {{ gisPageSize }} 个</span>
+              <el-pagination
+                background
+                layout="prev, pager, next"
+                :current-page="gisPage"
+                :page-size="gisPageSize"
+                :total="gisTotal"
+                @current-change="changeGisPage"
               />
             </div>
           </template>
