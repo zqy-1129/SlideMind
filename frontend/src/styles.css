@@ -207,20 +207,38 @@ body {
 }
 
 .graph-controls {
-  display: grid;
-  grid-template-columns: minmax(190px, 1fr) 132px 112px auto;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
   margin-bottom: 12px;
 }
 
+.graph-controls .el-select {
+  flex: 1 1 180px;
+  min-width: 160px;
+  max-width: 260px;
+}
+
+.graph-controls .el-input-number {
+  flex: 0 0 118px;
+  width: 118px;
+}
+
+.graph-controls .el-button {
+  flex: 0 0 auto;
+}
+
 .graph-switch {
   display: inline-flex;
-  gap: 8px;
+  flex: 0 0 auto;
+  gap: 6px;
   align-items: center;
-  justify-content: center;
+  min-width: 104px;
+  padding: 0 4px;
   color: #2563eb;
   font-size: 13px;
+  line-height: 32px;
   white-space: nowrap;
 }
 
@@ -310,7 +328,20 @@ body {
   }
 
   .graph-controls {
-    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .graph-controls .el-select,
+  .graph-controls .el-input-number,
+  .graph-controls .el-button {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
+  }
+
+  .graph-switch {
+    justify-content: space-between;
+    width: 100%;
   }
 
   .graph-workspace {
