@@ -975,7 +975,10 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
             </el-select>
             <el-input-number v-model="graphLimit" aria-label="每次展开节点数" :min="1" :max="100" :step="5" @change="refreshGraph" />
-            <el-switch v-model="includeTextKg" active-text="融合文本知识" inactive-text="仅空间图谱" />
+            <div class="graph-switch">
+              <span>文本融合</span>
+              <el-switch v-model="includeTextKg" aria-label="文本融合" />
+            </div>
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
           </div>
           <div class="graph-workspace">

@@ -208,10 +208,20 @@ body {
 
 .graph-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px 180px auto;
-  gap: 8px;
+  grid-template-columns: minmax(190px, 1fr) 132px 112px auto;
+  gap: 10px;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.graph-switch {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .empty {
