@@ -412,12 +412,16 @@ def _merge_dataset_root(tx, dataset_id: str, meta: dict[str, Any]) -> None:
         SET d.name = $name,
             d.dataset_id = $dataset_id,
             d.entity_type = '数据集',
-            d.meta_json = $meta_json
+            d.meta_json = $meta_json,
+            d.text_facts_json = $text_facts_json,
+            d.text_fact_count = $text_fact_count
         """,
         id=f"dataset:{dataset_id}",
         name=meta.get("dataset_name") or f"数据集 {dataset_id}",
         dataset_id=dataset_id,
         meta_json=json.dumps(meta, ensure_ascii=False, default=str),
+        text_facts_json=json.dumps(meta.get("text_facts") or [], ensure_ascii=False, default=str),
+        text_fact_count=meta.get("text_fact_count") or len(meta.get("text_facts") or []),
     )
 
 

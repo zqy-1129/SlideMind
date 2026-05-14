@@ -30,6 +30,18 @@ import {
 
 type AppPage = 'data' | 'analysis'
 type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
+type NodeDetailMode = 'formatted' | 'raw'
+
+interface NodeDetailItem {
+  label: string
+  value: string
+  wide?: boolean
+}
+
+interface NodeDetailSection {
+  title: string
+  items: NodeDetailItem[]
+}
 
 const activePage = ref<AppPage>('data')
 const datasets = ref<Dataset[]>([])
@@ -67,6 +79,7 @@ const expandedGraphNodeIds = ref<Set<string>>(new Set())
 const loadedGraphNodeIds = ref<Set<string>>(new Set())
 const loadingGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
+const nodeDetailMode = ref<NodeDetailMode>('formatted')
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -153,6 +166,7 @@ const gisRows = computed(() =>
 )
 
 const selectedChunk = computed(() => chunks.value.find((chunk) => chunk.id === selectedChunkId.value) || chunks.value[0])
+const formattedGraphNodeDetail = computed(() => buildNodeDetail(selectedGraphNode.value))
 
 async function refreshAll() {
   loading.value = true
@@ -484,6 +498,345 @@ function formatValue(value: unknown) {
   if (value === null || value === undefined || value === '') return '-'
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+function buildNodeDetail(node: GraphNode | null) {
+  if (!node) return null
+  const properties = node.properties || {}
+  const attributes = asRecord(parseJsonValue(properties.attributes_json)) || {}
+  const geometry = asRecord(parseJsonValue(properties.geometry_json))
+  const anchors = parseAnchorList(properties.spatial_anchor_json)
+  const sourceKind = readText(properties.source_kind)
+  const entityType = readText(properties.entity_type) || node.type
+  const gisCategory = readText(properties.gis_category) || readText(attributes.gis_category)
+  const geomType = readText(properties.geom_type) || readText(geometry?.type)
+  const displayName = readableNodeName(node, properties, attributes, gisCategory)
+  const displayType = readableNodeType(entityType, gisCategory, sourceKind)
+
+  const sections: NodeDetailSection[] = [
+    {
+      title: '基本信息',
+      items: compactItems([
+        { label: '名称', value: displayName },
+        { label: '类型', value: displayType },
+        { label: '图谱类型', value: entityType },
+        gisCategory ? { label: 'GIS类别', value: readableGisCategory(gisCategory) } : null,
+        geomType ? { label: '几何', value: readableGeometryType(geomType) } : null,
+        { label: '节点ID', value: readText(properties.id) || node.id, wide: true }
+      ])
+    },
+    {
+      title: '空间信息',
+      items: spatialDetailItems(properties, geometry, anchors, geomType)
+    },
+    {
+      title: '区域与来源',
+      items: compactItems([
+        { label: '所属区域', value: readText(properties.admin_belong) || readText(properties.region_name) },
+        { label: '区域匹配', value: readableRegionMatch(readText(attributes.region_match_method) || readText(properties.region_match_method)) },
+        { label: '区域置信度', value: formatPercent(readNumber(attributes.region_confidence) ?? readNumber(properties.region_confidence)) },
+        { label: '来源文件', value: readText(properties.source_file) || readText(properties.source_file_id), wide: true },
+        { label: 'Mongo记录', value: readText(properties.mongo_id), wide: true }
+      ])
+    },
+    {
+      title: '文本知识',
+      items: textDetailItems(properties, attributes, sourceKind, entityType)
+    },
+    {
+      title: '重要属性',
+      items: importantAttributeItems(attributes)
+    }
+  ]
+
+  return {
+    title: displayName,
+    typeLabel: displayType,
+    sections: sections
+      .map((section) => ({ ...section, items: section.items.filter((item) => item.value && item.value !== '-') }))
+      .filter((section) => section.items.length > 0)
+  }
+}
+
+function compactItems(items: Array<NodeDetailItem | null | undefined>) {
+  return items.filter((item): item is NodeDetailItem => Boolean(item?.value && item.value !== '-'))
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  if (!value.trim()) return null
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  return null
+}
+
+function readText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'string') return value.trim()
+  return ''
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function readableNodeName(node: GraphNode, properties: Record<string, unknown>, attributes: Record<string, unknown>, gisCategory: string) {
+  const directName = firstText([
+    properties.name,
+    attributes.name,
+    attributes.NAME,
+    attributes.Name,
+    attributes['名称'],
+    attributes.name_1,
+    attributes.name_2,
+    node.label
+  ])
+  if (directName && !isWeakNodeName(directName)) return directName
+  const adminName = firstText([properties.admin_belong, properties.region_name, attributes.admin_belong, attributes.name_2])
+  const categoryName = readableGisCategory(gisCategory || readText(properties.entity_type) || node.type)
+  if (adminName && categoryName) return `${adminName}${categoryName}`
+  return node.label || readText(properties.id) || node.id
+}
+
+function firstText(values: unknown[]) {
+  return values.map(readText).find((value) => value) || ''
+}
+
+function isWeakNodeName(value: string) {
+  const compact = value.replace(/[\s,，;；/、._-]+/g, '')
+  return /^\d+$/.test(compact) || /^[a-f0-9]{16,}$/i.test(compact)
+}
+
+function readableNodeType(entityType: string, gisCategory: string, sourceKind: string) {
+  if (sourceKind === 'text_collection') return '文本知识集合'
+  if (sourceKind === 'text_entity') return '文本知识实体'
+  if (sourceKind === 'document') return '文本文档'
+  if (sourceKind === 'document_chunk') return '文本切片'
+  if (sourceKind === 'insar' || entityType.includes('InSAR')) return 'InSAR监测点'
+  if (entityType.includes('集合')) return `${entityType.replace('_', '')}`
+  return readableGisCategory(gisCategory || entityType) || entityType || '图谱节点'
+}
+
+function readableGisCategory(value: string) {
+  const labels: Record<string, string> = {
+    area: '区域',
+    build: '建筑',
+    traffic: '交通要素',
+    water: '水域要素',
+    other: '其他要素',
+    行政区: '区域',
+    建筑: '建筑',
+    交通: '交通要素',
+    水域: '水域要素'
+  }
+  return labels[value] || value
+}
+
+function readableGeometryType(value: string) {
+  const labels: Record<string, string> = {
+    Point: '点',
+    MultiPoint: '多点',
+    LineString: '线',
+    MultiLineString: '多线',
+    Polygon: '面',
+    MultiPolygon: '多面',
+    Collection: '集合'
+  }
+  return labels[value] || value
+}
+
+function readableRegionMatch(value: string) {
+  const labels: Record<string, string> = {
+    explicit: '文本明确提及',
+    inherited: '继承上文区域',
+    dataset_default: '默认归入数据集',
+    unknown: '未定位'
+  }
+  return labels[value] || value
+}
+
+function parseAnchorList(value: unknown) {
+  const parsed = parseJsonValue(value)
+  if (!Array.isArray(parsed)) return []
+  return parsed
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+}
+
+function spatialDetailItems(
+  properties: Record<string, unknown>,
+  geometry: Record<string, unknown> | null,
+  anchors: Record<string, unknown>[],
+  geomType: string
+) {
+  const point = pointFromGeometry(geometry)
+  const centroid = formatCoordinate(readNumber(properties.centroid_lon), readNumber(properties.centroid_lat))
+  const anchorText = anchors
+    .slice(0, 4)
+    .map((anchor, index) => {
+      const coord = formatCoordinate(readNumber(anchor.anchor_lon), readNumber(anchor.anchor_lat))
+      return coord ? `${index + 1}. ${coord}` : ''
+    })
+    .filter(Boolean)
+    .join('；')
+  const bbox = geometry ? geometryBoundsText(geometry) : ''
+  return compactItems([
+    geomType ? { label: '空间形态', value: readableGeometryType(geomType) } : null,
+    point ? { label: '经纬度', value: point } : null,
+    !point && centroid ? { label: '代表点', value: centroid } : null,
+    !point && anchorText ? { label: '锚点坐标', value: anchorText, wide: true } : null,
+    bbox ? { label: '空间范围', value: bbox, wide: true } : null,
+    { label: '尺度层级', value: readText(properties.scale_level) }
+  ])
+}
+
+function pointFromGeometry(geometry: Record<string, unknown> | null) {
+  if (!geometry || geometry.type !== 'Point' || !Array.isArray(geometry.coordinates)) return ''
+  return formatCoordinate(readNumber(geometry.coordinates[0]), readNumber(geometry.coordinates[1]))
+}
+
+function formatCoordinate(lon: number | null, lat: number | null) {
+  if (lon === null || lat === null) return ''
+  return `${lon.toFixed(6)}, ${lat.toFixed(6)}`
+}
+
+function geometryBoundsText(geometry: Record<string, unknown>) {
+  const coords: Array<[number, number]> = []
+  collectCoordinates(geometry.coordinates, coords)
+  if (!coords.length) return ''
+  const lons = coords.map(([lon]) => lon)
+  const lats = coords.map(([, lat]) => lat)
+  return `经度 ${Math.min(...lons).toFixed(6)} 至 ${Math.max(...lons).toFixed(6)}，纬度 ${Math.min(...lats).toFixed(6)} 至 ${Math.max(...lats).toFixed(6)}`
+}
+
+function collectCoordinates(value: unknown, result: Array<[number, number]>) {
+  if (!Array.isArray(value)) return
+  if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
+    result.push([value[0], value[1]])
+    return
+  }
+  value.forEach((item) => collectCoordinates(item, result))
+}
+
+function textDetailItems(
+  properties: Record<string, unknown>,
+  attributes: Record<string, unknown>,
+  sourceKind: string,
+  entityType: string
+) {
+  const textFacts = parseTextFacts(attributes.text_facts).concat(parseTextFacts(properties.text_facts_json))
+  const isTextNode = sourceKind.startsWith('text') || sourceKind === 'document' || sourceKind === 'document_chunk' || entityType.includes('Text') || entityType === 'DocumentChunk'
+  if (!isTextNode && textFacts.length === 0) return []
+  return compactItems([
+    isTextNode ? { label: '文本类型', value: readableNodeType(entityType, readText(properties.gis_category), sourceKind) } : null,
+    { label: '所属区域', value: readText(properties.region_name) || readText(attributes.region_name) },
+    { label: '切片序号', value: readText(attributes.chunk_index) },
+    { label: '向量ID', value: readText(attributes.milvus_vector_id), wide: true },
+    { label: '文本事实', value: summarizeText(formatTextFacts(textFacts), 220), wide: true },
+    { label: '内容摘要', value: summarizeText(readText(attributes.text) || readText(properties.evidence_text)), wide: true },
+    { label: '证据文本', value: summarizeText(readText(attributes.evidence_text) || readText(properties.evidence_text)), wide: true },
+    { label: '置信度', value: formatPercent(readNumber(attributes.confidence) ?? readNumber(properties.confidence)) }
+  ])
+}
+
+function parseTextFacts(value: unknown) {
+  const parsed = parseJsonValue(value)
+  if (!Array.isArray(parsed)) return []
+  return parsed.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+}
+
+function formatTextFacts(facts: Record<string, unknown>[]) {
+  return facts
+    .slice(0, 4)
+    .map((fact) => [fact.subject, fact.relation, fact.object].map(readText).filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join('；')
+}
+
+function importantAttributeItems(attributes: Record<string, unknown>) {
+  const baseAttributes = asRecord(attributes.base_attributes) || {}
+  const merged = { ...attributes, ...baseAttributes }
+  const keys = [
+    'name',
+    'NAME',
+    'Name',
+    '名称',
+    'name_1',
+    'name_2',
+    'id',
+    'fclass',
+    'point_id',
+    'velocity',
+    'displacement',
+    'total_observations',
+    'text_fact_count',
+    'rainfall',
+    'elevation',
+    'water_level',
+    'time',
+    'location'
+  ]
+  return compactItems(
+    keys.map((key) => {
+      const value = merged[key]
+      return value === undefined ? null : { label: attributeLabel(key), value: summarizeText(readDisplayValue(value)), wide: String(value).length > 28 }
+    })
+  )
+}
+
+function attributeLabel(key: string) {
+  const labels: Record<string, string> = {
+    name: '名称',
+    NAME: '名称',
+    Name: '名称',
+    name_1: '相关名称',
+    name_2: '所属区域',
+    id: '编号',
+    fclass: '要素类别',
+    point_id: '监测点编号',
+    velocity: '速度',
+    displacement: '位移',
+    total_observations: '观测次数',
+    text_fact_count: '文本事实数',
+    rainfall: '降雨量',
+    elevation: '高程',
+    water_level: '水位',
+    time: '时间',
+    location: '地点'
+  }
+  return labels[key] || key
+}
+
+function readDisplayValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(readDisplayValue).join('，')
+  if (value && typeof value === 'object') return JSON.stringify(value)
+  return readText(value)
+}
+
+function summarizeText(value: string, maxLength = 160) {
+  const clean = value.replace(/\s+/g, ' ').trim()
+  if (!clean) return ''
+  return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean
+}
+
+function formatPercent(value: number | null) {
+  if (value === null) return ''
+  const normalized = value > 1 ? value : value * 100
+  return `${normalized.toFixed(1)}%`
 }
 
 function columnLabel(key: string) {
@@ -1000,9 +1353,33 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 <span>节点详情</span>
               </div>
               <template v-if="selectedGraphNode">
-                <h3>{{ selectedGraphNode.label }}</h3>
-                <el-tag>{{ selectedGraphNode.type }}</el-tag>
-                <pre class="json-preview">{{ JSON.stringify(selectedGraphNode.properties, null, 2) }}</pre>
+                <div class="node-detail-head">
+                  <div>
+                    <h3>{{ formattedGraphNodeDetail?.title || selectedGraphNode.label }}</h3>
+                    <el-tag>{{ formattedGraphNodeDetail?.typeLabel || selectedGraphNode.type }}</el-tag>
+                  </div>
+                  <el-segmented
+                    v-model="nodeDetailMode"
+                    size="small"
+                    :options="[
+                      { label: '格式化', value: 'formatted' },
+                      { label: '原始数据', value: 'raw' }
+                    ]"
+                  />
+                </div>
+                <template v-if="nodeDetailMode === 'formatted' && formattedGraphNodeDetail">
+                  <section v-for="section in formattedGraphNodeDetail.sections" :key="section.title" class="detail-section">
+                    <div class="detail-section-title">{{ section.title }}</div>
+                    <dl class="detail-list">
+                      <div v-for="item in section.items" :key="`${section.title}-${item.label}`" class="detail-item" :class="{ wide: item.wide }">
+                        <dt>{{ item.label }}</dt>
+                        <dd>{{ item.value }}</dd>
+                      </div>
+                    </dl>
+                  </section>
+                  <el-empty v-if="formattedGraphNodeDetail.sections.length === 0" description="暂无可读属性，请切换原始数据查看" />
+                </template>
+                <pre v-else class="json-preview">{{ JSON.stringify(selectedGraphNode.properties, null, 2) }}</pre>
               </template>
               <el-empty v-else description="单击节点查看内容，双击节点展开关联" />
             </aside>

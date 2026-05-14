@@ -77,8 +77,7 @@ async def enrich_kg_with_text_knowledge(
 
     await database.text_kg_tuples.delete_many({"dataset_id": dataset_id})
     regions = _build_region_dictionary(dataset_id, kg)
-    alias_to_entity = _build_entity_alias_index(kg)
-    document_map = await _load_documents(dataset_id)
+    alias_to_entity = _build_entity_alias_index(dataset_id, kg)
 
     await _log(log, f"开始文本区域锚定：chunk {len(chunks)} 个，候选区域 {len(regions)} 个", 85)
 
@@ -86,8 +85,6 @@ async def enrich_kg_with_text_knowledge(
     tuple_ids_by_chunk: dict[str, list[str]] = {}
     created_entities: dict[str, str] = {}
     created_collections: dict[str, str] = {}
-    created_documents: set[str] = set()
-    created_chunks: set[str] = set()
     matched_regions = 0
     unmatched_regions = 0
     processed_chunks = 0
@@ -111,9 +108,6 @@ async def enrich_kg_with_text_knowledge(
         if tuples:
             processed_chunks += 1
             status = "extracted"
-            document_entity_id = _ensure_document_entity(kg, document_map.get(chunk.get("document_id")), created_documents)
-            chunk_entity_id = _ensure_chunk_entity(kg, chunk, document_entity_id, created_chunks)
-            collection_id = _ensure_text_collection(kg, dataset_id, region, created_collections)
             for item in tuples:
                 anchored_region = _validate_tuple_region(item, regions) or region or _dataset_region(dataset_id, kg)
                 item["region_id"] = anchored_region.region_id
@@ -140,6 +134,8 @@ async def enrich_kg_with_text_knowledge(
                     created_entities,
                     item,
                 )
+                _attach_text_fact(kg, subject_id, item, "subject", anchored_region, chunk_id)
+                _attach_text_fact(kg, object_id, item, "object", anchored_region, chunk_id)
                 _append_relation(
                     kg,
                     anchored_collection_id,
@@ -174,10 +170,6 @@ async def enrich_kg_with_text_knowledge(
                     chunk_id=chunk_id,
                     document_id=chunk.get("document_id"),
                 )
-                _append_relation(kg, subject_id, chunk_entity_id, "提及", "实体-文本切片关系", source_id=chunk_id)
-                _append_relation(kg, object_id, chunk_entity_id, "提及", "实体-文本切片关系", source_id=chunk_id)
-                _append_relation(kg, collection_id, chunk_entity_id, "包含", "文本知识集合-切片关系", source_id=chunk_id)
-
                 tuple_id = _hash_id("tuple", dataset_id, chunk_id, item["subject"], item["relation"], item["object"])
                 tuple_ids.append(tuple_id)
                 tuple_docs.append(
@@ -370,8 +362,13 @@ def _build_region_dictionary(dataset_id: str, kg: dict[str, Any]) -> list[Region
     return regions
 
 
-def _build_entity_alias_index(kg: dict[str, Any]) -> dict[str, str]:
+def _build_entity_alias_index(dataset_id: str, kg: dict[str, Any]) -> dict[str, str]:
     index: dict[str, str] = {}
+    dataset_name = str(kg.get("meta", {}).get("dataset_name") or "").strip()
+    for alias in {dataset_name, f"{dataset_name}滑坡" if dataset_name else ""}:
+        normalized = _normalize(alias)
+        if normalized:
+            index.setdefault(normalized, f"dataset:{dataset_id}")
     for entity in kg.get("entities", []):
         for alias in _entity_aliases(entity):
             normalized = _normalize(alias)
@@ -452,6 +449,57 @@ def _resolve_or_create_text_entity(
     return entity_id
 
 
+def _attach_text_fact(
+    kg: dict[str, Any],
+    entity_id: str,
+    item: dict[str, Any],
+    role: str,
+    region: RegionCandidate,
+    chunk_id: str,
+) -> None:
+    fact = {
+        "role": role,
+        "subject": item.get("subject"),
+        "relation": item.get("relation"),
+        "object": item.get("object"),
+        "time": item.get("time"),
+        "location": item.get("location"),
+        "region_id": region.region_id,
+        "region_name": region.region_name,
+        "confidence": item.get("confidence"),
+        "evidence_text": item.get("evidence_text"),
+        "chunk_id": chunk_id,
+    }
+    if entity_id.startswith("dataset:"):
+        facts = kg.setdefault("meta", {}).setdefault("text_facts", [])
+        _append_unique_fact(facts, fact)
+        kg["meta"]["text_fact_count"] = len(facts)
+        return
+
+    entity = next((entry for entry in kg.get("entities", []) if entry.get("__id__") == entity_id), None)
+    if entity is None:
+        return
+    attributes = entity.setdefault("attributes", {})
+    if not isinstance(attributes, dict):
+        attributes = {}
+        entity["attributes"] = attributes
+    facts = attributes.setdefault("text_facts", [])
+    if not isinstance(facts, list):
+        facts = []
+        attributes["text_facts"] = facts
+    _append_unique_fact(facts, fact)
+    attributes["text_fact_count"] = len(facts)
+
+
+def _append_unique_fact(facts: list[dict[str, Any]], fact: dict[str, Any], limit: int = 30) -> None:
+    key = (fact.get("subject"), fact.get("relation"), fact.get("object"), fact.get("chunk_id"))
+    for existing in facts:
+        if (existing.get("subject"), existing.get("relation"), existing.get("object"), existing.get("chunk_id")) == key:
+            return
+    facts.append(fact)
+    del facts[limit:]
+
+
 def _ensure_text_collection(
     kg: dict[str, Any],
     dataset_id: str,
@@ -463,7 +511,7 @@ def _ensure_text_collection(
     if key in created_collections:
         return created_collections[key]
     collection_id = _hash_id("text-collection", dataset_id, region.region_id)
-    name = "未定位文本知识_集合" if region.source == "dataset" else f"{region.region_name}_文本知识集合"
+    name = f"{region.region_name}_文本知识集合"
     kg["entities"].append(
         {
             "__id__": collection_id,

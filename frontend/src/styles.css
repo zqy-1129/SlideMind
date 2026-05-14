@@ -282,8 +282,69 @@ body {
   font-size: 16px;
 }
 
+.node-detail-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.node-detail-head .el-segmented {
+  flex: 0 0 auto;
+}
+
 .node-detail .json-preview {
   margin-top: 12px;
+}
+
+.detail-section {
+  margin-top: 12px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8ec;
+  border-radius: 6px;
+}
+
+.detail-section-title {
+  margin-bottom: 8px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.detail-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.detail-item {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.detail-item dt {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.detail-item dd {
+  min-width: 0;
+  margin: 0;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.detail-item.wide {
+  grid-template-columns: 1fr;
+  gap: 4px;
 }
 
 .qa-panel .el-textarea {
@@ -350,5 +411,13 @@ body {
 
   .node-detail {
     min-height: 260px;
+  }
+
+  .node-detail-head {
+    flex-direction: column;
+  }
+
+  .node-detail-head .el-segmented {
+    width: 100%;
   }
 }
