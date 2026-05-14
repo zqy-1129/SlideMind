@@ -95,6 +95,7 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
     old_document_ids = [str(document["_id"]) async for document in old_documents]
     await get_db().documents.delete_many({"source_file_id": source_file_id})
     await get_db().document_chunks.delete_many({"source_file_id": source_file_id})
+    await get_db().text_kg_tuples.delete_many({"source_file_id": source_file_id})
 
     text = parse_text(file_doc["path"])
     document_id = oid()
@@ -124,6 +125,12 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
                 "chunk_index": index,
                 "text": chunk,
                 "entity_ids": [],
+                "tuple_ids": [],
+                "region_id": None,
+                "region_name": None,
+                "region_match_method": "unknown",
+                "region_confidence": 0,
+                "extraction_status": "pending",
                 "milvus_vector_id": vector_id,
                 "created_at": datetime.utcnow(),
             }

@@ -62,6 +62,7 @@ const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
 const graphLimit = ref(20)
+const includeTextKg = ref(true)
 const expandedGraphNodeIds = ref<Set<string>>(new Set())
 const loadedGraphNodeIds = ref<Set<string>>(new Set())
 const loadingGraphNodeIds = ref<Set<string>>(new Set())
@@ -393,7 +394,7 @@ async function buildGraph() {
     ElMessage.warning('请先选择数据集')
     return
   }
-  const task = await api.buildGraph(selectedDatasetId.value)
+  const task = await api.buildGraph(selectedDatasetId.value, includeTextKg.value)
   graphTask.value = {
     id: task.task_id,
     dataset_id: selectedDatasetId.value,
@@ -960,6 +961,13 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <span>{{ graphTaskLastLog || '等待任务日志' }}</span>
             </div>
             <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
+            <div v-if="graphTask.summary?.text_kg_enabled !== undefined" class="graph-task-summary">
+              文本融合：{{ graphTask.summary.text_kg_enabled ? '开启' : '关闭' }}，
+              chunk {{ graphTask.summary.text_chunks_processed || 0 }}/{{ graphTask.summary.text_chunks_total || 0 }}，
+              五元组 {{ graphTask.summary.text_tuple_count || 0 }}，
+              区域匹配 {{ graphTask.summary.text_region_matched || 0 }}，
+              未定位 {{ graphTask.summary.text_region_unmatched || 0 }}
+            </div>
           </div>
           <div class="graph-controls">
             <el-select v-model="graphNodeType" placeholder="全部节点类型" clearable @change="refreshGraph">
@@ -967,6 +975,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-option v-for="type in graphNodeTypes" :key="type" :label="type" :value="type" />
             </el-select>
             <el-input-number v-model="graphLimit" aria-label="每次展开节点数" :min="1" :max="100" :step="5" @change="refreshGraph" />
+            <el-switch v-model="includeTextKg" active-text="融合文本知识" inactive-text="仅空间图谱" />
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
           </div>
           <div class="graph-workspace">

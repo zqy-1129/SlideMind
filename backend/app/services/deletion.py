@@ -23,6 +23,7 @@ async def delete_dataset_cascade(dataset_id: str) -> dict[str, Any]:
         "tabular_records": (await database.tabular_records.delete_many({"dataset_id": dataset_id})).deleted_count,
         "documents": (await database.documents.delete_many({"dataset_id": dataset_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"dataset_id": dataset_id})).deleted_count,
+        "text_kg_tuples": (await database.text_kg_tuples.delete_many({"dataset_id": dataset_id})).deleted_count,
         "gis_features": (await database.gis_features.delete_many({"dataset_id": dataset_id})).deleted_count,
         "graph_tasks": (await database.graph_tasks.delete_many({"dataset_id": dataset_id})).deleted_count,
         "qa_records": (await database.qa_records.delete_many({"dataset_id": dataset_id})).deleted_count,
@@ -62,6 +63,7 @@ async def delete_import_cascade(task_id: str) -> dict[str, Any]:
         "tabular_records": (await database.tabular_records.delete_many({"source_file_id": file_id})).deleted_count,
         "documents": (await database.documents.delete_many({"source_file_id": file_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"source_file_id": file_id})).deleted_count,
+        "text_kg_tuples": (await database.text_kg_tuples.delete_many({"source_file_id": file_id})).deleted_count,
         "gis_features": (await database.gis_features.delete_many({"source_file_id": file_id})).deleted_count,
     }
 
@@ -131,10 +133,12 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
         ]
         documents = await database.documents.delete_many({"dataset_id": dataset_id})
         chunks = await database.document_chunks.delete_many({"dataset_id": dataset_id})
+        text_tuples = await database.text_kg_tuples.delete_many({"dataset_id": dataset_id})
         tasks = await database.import_tasks.delete_many({"dataset_id": dataset_id, "data_type": "document"})
         uploaded = await database.uploaded_files.delete_many({"dataset_id": dataset_id, "data_type": "document"})
         removed_files = _remove_files(files)
         vector_deleted = _delete_vectors_by_chunk_ids(chunk_ids)
+        graph_deleted = _delete_graph_dataset(dataset_id)
         return {
             "deleted": True,
             "data_kind": data_kind,
@@ -142,11 +146,13 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
             "counts": {
                 "documents": documents.deleted_count,
                 "document_chunks": chunks.deleted_count,
+                "text_kg_tuples": text_tuples.deleted_count,
                 "import_tasks": tasks.deleted_count,
                 "uploaded_files": uploaded.deleted_count,
             },
             "removed_files": removed_files,
             "vector_deleted": vector_deleted,
+            "graph_deleted": graph_deleted,
         }
 
     return {"deleted": False, "reason": "Unsupported data kind"}

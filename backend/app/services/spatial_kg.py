@@ -459,6 +459,12 @@ def _entity_props(dataset_id: str, entity: dict[str, Any]) -> dict[str, Any]:
     centroid_lon = None
     centroid_lat = None
     anchors = entity.get("spatial_anchor") or []
+    attributes = entity.get("attributes") or {}
+    region_id = entity.get("region_id")
+    region_name = entity.get("region_name")
+    if isinstance(attributes, dict):
+        region_id = region_id or attributes.get("region_id")
+        region_name = region_name or attributes.get("region_name")
     if anchors:
         centroid_lon = anchors[0].get("anchor_lon")
         centroid_lat = anchors[0].get("anchor_lat")
@@ -475,12 +481,14 @@ def _entity_props(dataset_id: str, entity: dict[str, Any]) -> dict[str, Any]:
             "source_kind": entity.get("source_kind"),
             "gis_category": entity.get("gis_category"),
             "admin_belong": entity.get("admin_belong"),
+            "region_id": region_id,
+            "region_name": region_name,
             "scale_level": entity.get("scale_level"),
             "semantic_tag": entity.get("semantic_tag"),
             "centroid_lon": centroid_lon,
             "centroid_lat": centroid_lat,
             "geometry_json": json.dumps(entity.get("geometry"), ensure_ascii=False, default=str),
-            "attributes_json": json.dumps(entity.get("attributes") or {}, ensure_ascii=False, default=str),
+            "attributes_json": json.dumps(attributes, ensure_ascii=False, default=str),
             "spatial_anchor_json": json.dumps(entity.get("spatial_anchor") or [], ensure_ascii=False, default=str),
         }
     )
@@ -501,6 +509,16 @@ def _relation_props(dataset_id: str, relation: dict[str, Any]) -> dict[str, Any]
             "source_velocity": relation.get("source_velocity"),
             "target_velocity": relation.get("target_velocity"),
             "is_nearest_neighbor": relation.get("is_nearest_neighbor"),
+            "subject": relation.get("subject"),
+            "object": relation.get("object"),
+            "time": relation.get("time"),
+            "location": relation.get("location"),
+            "region_id": relation.get("region_id"),
+            "region_name": relation.get("region_name"),
+            "confidence": relation.get("confidence"),
+            "evidence_text": relation.get("evidence_text"),
+            "chunk_id": relation.get("chunk_id"),
+            "document_id": relation.get("document_id"),
         }
     )
 
@@ -520,6 +538,16 @@ def _neo4j_label(entity: dict[str, Any]) -> str:
     entity_type = str(entity.get("type") or "")
     source_kind = entity.get("source_kind")
     category = entity.get("gis_category")
+    if source_kind == "text_collection":
+        return "TextKnowledgeCollection"
+    if source_kind == "text_entity":
+        if entity_type in {"TextEvent", "RiskFactor", "EngineeringMeasure"}:
+            return entity_type
+        return "TextEntity"
+    if source_kind == "document":
+        return "Document"
+    if source_kind == "document_chunk":
+        return "DocumentChunk"
     if source_kind == "gis_collection" or "集合" in entity_type:
         return "GISCollection"
     if category in GIS_CATEGORY_TYPES:
@@ -530,9 +558,25 @@ def _neo4j_label(entity: dict[str, Any]) -> str:
 
 
 def _neo4j_relation_type(relation: dict[str, Any]) -> str:
-    if relation.get("type") == "空间影响关系":
+    relation_type = relation.get("type")
+    if relation_type == "空间影响关系":
         return "SPATIAL_INFLUENCE"
     content = relation.get("content")
+    if relation_type in {"区域-文本知识集合关系", "文本知识集合-实体关系"} or content == "文本知识":
+        return "HAS_TEXT_KNOWLEDGE"
+    if relation_type == "实体-文本切片关系" or content == "提及":
+        return "MENTIONED_IN"
+    if relation_type == "文本五元组关系":
+        text = str(content or relation.get("relation_name") or "")
+        if any(word in text for word in ("诱发", "导致", "引起", "加剧")):
+            return "CAUSES"
+        if "影响" in text:
+            return "AFFECTS"
+        if "风险" in text:
+            return "HAS_RISK"
+        if any(word in text for word in ("治理", "防治", "控制", "减缓")):
+            return "CONTROLLED_BY"
+        return "RELATED_TO"
     if content == "包含":
         return "CONTAINS"
     if content == "位于":

@@ -92,6 +92,12 @@ export interface DocumentChunk {
   document_id: string
   chunk_index: number
   text: string
+  tuple_ids?: string[]
+  region_id?: string
+  region_name?: string
+  region_match_method?: string
+  region_confidence?: number
+  extraction_status?: string
   milvus_vector_id?: string
   created_at: string
 }
@@ -181,11 +187,11 @@ export const api = {
     params.set('page_size', String(pageSize))
     return request<PageResult<GisFeature>>(`/gis-features?${params.toString()}`)
   },
-  buildGraph: (datasetId: string) =>
+  buildGraph: (datasetId: string, includeTextKg = true) =>
     request<GraphBuildTask>('/graph/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dataset_id: datasetId })
+      body: JSON.stringify({ dataset_id: datasetId, include_text_kg: includeTextKg })
     }),
   getGraphTask: (taskId: string) => request<GraphTask>(`/graph/tasks/${taskId}`),
   getGraph: (datasetId?: string, limit = 20, nodeType?: string, parentId?: string) => {

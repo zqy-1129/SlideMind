@@ -4,13 +4,28 @@ from neo4j import Driver
 
 from app.db.neo4j import get_driver
 from app.services.spatial_kg import ProgressLogger, build_spatial_kg_from_mongo, write_kg_to_neo4j
+from app.services.text_kg import enrich_kg_with_text_knowledge
 
 
-async def build_graph_for_dataset(dataset_id: str, log: ProgressLogger | None = None) -> dict[str, int]:
+async def build_graph_for_dataset(
+    dataset_id: str,
+    log: ProgressLogger | None = None,
+    include_text_kg: bool = True,
+) -> dict[str, int]:
     kg = await build_spatial_kg_from_mongo(dataset_id, log=log)
+    if include_text_kg:
+        if log is not None:
+            await log("融合文本五元组知识", 84)
+        text_summary = await enrich_kg_with_text_knowledge(dataset_id, kg, log=log)
+    else:
+        text_summary = {"text_kg_enabled": False}
+        kg.setdefault("meta", {})["text_kg"] = text_summary
+        if log is not None:
+            await log("已关闭文本知识融合", 84)
     if log is not None:
-        await log("写入 Neo4j", 88)
+        await log("写入 Neo4j", 92)
     summary = write_kg_to_neo4j(get_driver(), dataset_id, kg)
+    summary.update(text_summary)
     if log is not None:
         await log("Neo4j 写入完成", 100)
     return summary
@@ -79,9 +94,10 @@ def _read_graph_roots(driver: Driver, dataset_id: str, limit: int) -> dict[str, 
     edges: dict[str, dict[str, Any]] = {}
     query = """
     MATCH (d:DatasetGraph {dataset_id: $dataset_id})
-    OPTIONAL MATCH (d)-[r:HAS_ENTITY]->(child:Area)
+    OPTIONAL MATCH (d)-[r:HAS_ENTITY|HAS_TEXT_KNOWLEDGE]->(child)
+    WHERE child:Area OR (child.source_kind = 'text_collection' AND child.region_id = d.id)
     RETURN d, r, child
-    ORDER BY coalesce(child.name, '')
+    ORDER BY CASE WHEN child:Area THEN 0 ELSE 9 END, coalesce(child.name, '')
     LIMIT $limit
     """
     fallback_query = """
@@ -122,7 +138,7 @@ def _read_graph_children(driver: Driver, dataset_id: str | None, parent_id: str,
     contains_query = f"""
     MATCH (parent {{id: $parent_id}})
     WHERE true {parent_filter}
-    OPTIONAL MATCH (parent)-[r:CONTAINS]->(child)
+    OPTIONAL MATCH (parent)-[r:CONTAINS|HAS_TEXT_KNOWLEDGE]->(child)
     WHERE child IS NULL OR true {dataset_filter}
     RETURN parent, r, child
     ORDER BY
@@ -130,6 +146,7 @@ def _read_graph_children(driver: Driver, dataset_id: str | None, parent_id: str,
         WHEN child.entity_type CONTAINS '交通' THEN 0
         WHEN child.entity_type CONTAINS '水' THEN 1
         WHEN child.entity_type CONTAINS '建筑' THEN 2
+        WHEN child.entity_type CONTAINS '文本' THEN 3
         ELSE 9
       END,
       coalesce(child.entity_type, ''),

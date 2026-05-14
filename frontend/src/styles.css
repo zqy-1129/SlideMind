@@ -200,9 +200,15 @@ body {
   font-size: 13px;
 }
 
+.graph-task-summary {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .graph-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px auto;
+  grid-template-columns: minmax(180px, 1fr) 140px 180px auto;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;

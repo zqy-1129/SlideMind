@@ -33,6 +33,7 @@ async def run_graph_task(task_id: str) -> None:
         raise ValueError(f"Graph task not found: {task_id}")
 
     dataset_id = task["dataset_id"]
+    include_text_kg = bool(task.get("include_text_kg", True))
 
     async def log(message: str, progress: int) -> None:
         await database.graph_tasks.update_one(
@@ -52,7 +53,7 @@ async def run_graph_task(task_id: str) -> None:
     )
 
     try:
-        summary = await build_graph_for_dataset(dataset_id, log=log)
+        summary = await build_graph_for_dataset(dataset_id, log=log, include_text_kg=include_text_kg)
         await database.graph_tasks.update_one(
             {"_id": ObjectId(task_id)},
             {

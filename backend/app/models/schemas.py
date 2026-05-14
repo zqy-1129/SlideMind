@@ -62,6 +62,7 @@ class ImportTaskOut(BaseModel):
 
 class GraphBuildRequest(BaseModel):
     dataset_id: str
+    include_text_kg: bool = True
 
 
 class GraphBuildOut(BaseModel):

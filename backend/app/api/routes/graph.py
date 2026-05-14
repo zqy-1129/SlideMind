@@ -24,6 +24,7 @@ async def build_graph(payload: GraphBuildRequest) -> dict:
         {
             "_id": ObjectId(task_id),
             "dataset_id": payload.dataset_id,
+            "include_text_kg": payload.include_text_kg,
             "status": "queued",
             "progress": 0,
             "logs": ["图谱生成任务已创建"],
