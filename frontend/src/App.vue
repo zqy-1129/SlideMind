@@ -594,7 +594,15 @@ function renderGraph() {
   if (!graphCanvas.value) return
   chart ||= echarts.init(graphCanvas.value)
   chart.off('click')
+  chart.off('dblclick')
   chart.on('click', (params) => {
+    const data = params.data as { id?: string } | undefined
+    if (params.dataType === 'node' && data?.id) {
+      const clickedNode = graphNodes.value.find((node) => node.id === String(data.id)) || null
+      selectedGraphNode.value = clickedNode
+    }
+  })
+  chart.on('dblclick', (params) => {
     const data = params.data as { id?: string } | undefined
     if (params.dataType === 'node' && data?.id) {
       const clickedNode = graphNodes.value.find((node) => node.id === String(data.id)) || null
@@ -996,7 +1004,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 <el-tag>{{ selectedGraphNode.type }}</el-tag>
                 <pre class="json-preview">{{ JSON.stringify(selectedGraphNode.properties, null, 2) }}</pre>
               </template>
-              <el-empty v-else description="点击图谱节点查看内容" />
+              <el-empty v-else description="单击节点查看内容，双击节点展开关联" />
             </aside>
           </div>
           <div class="edge-summary">{{ graphNodes.length }} 个已加载节点，{{ graphEdges.length }} 条关系，每次展开最多 {{ graphLimit }} 个关联节点</div>
