@@ -24,6 +24,7 @@ import {
   type GraphEdge,
   type GraphNode,
   type GraphTask,
+  type InsarTimeSeries,
   type ImportTask,
   type TabularRecord
 } from './api/client'
@@ -68,7 +69,9 @@ const uploadRef = ref<UploadInstance>()
 const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
+const insarSeriesCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
+let insarSeriesChart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
 const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
@@ -80,6 +83,9 @@ const loadedGraphNodeIds = ref<Set<string>>(new Set())
 const loadingGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
 const nodeDetailMode = ref<NodeDetailMode>('formatted')
+const insarSeriesVisible = ref(false)
+const insarSeriesLoading = ref(false)
+const selectedInsarSeries = ref<InsarTimeSeries | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -152,6 +158,7 @@ const recordColumns = computed(() => {
   const keys = new Set<string>()
   recordRows.value.forEach((row) => {
     Object.keys(row).forEach((key) => {
+      if (/^D_\d{8}$/.test(key)) return
       if (!['id', 'raw_fields', 'data_type'].includes(key)) keys.add(key)
     })
   })
@@ -783,6 +790,15 @@ function importantAttributeItems(attributes: Record<string, unknown>) {
     'velocity',
     'displacement',
     'total_observations',
+    'observation_count',
+    'start_date',
+    'end_date',
+    'latest_value',
+    'max_settlement',
+    'max_uplift',
+    'cumulative_change',
+    'average_rate',
+    'trend',
     'text_fact_count',
     'rainfall',
     'elevation',
@@ -811,6 +827,15 @@ function attributeLabel(key: string) {
     velocity: '速度',
     displacement: '位移',
     total_observations: '观测次数',
+    observation_count: '观测次数',
+    start_date: '起始日期',
+    end_date: '最新日期',
+    latest_value: '最新累计形变',
+    max_settlement: '最大沉降',
+    max_uplift: '最大抬升',
+    cumulative_change: '累计变化',
+    average_rate: '平均变化率/天',
+    trend: '趋势',
     text_fact_count: '文本事实数',
     rainfall: '降雨量',
     elevation: '高程',
@@ -858,6 +883,71 @@ function columnLabel(key: string) {
 
 function selectChunk(row: DocumentChunk) {
   selectedChunkId.value = row.id
+}
+
+async function openInsarSeries(row: Record<string, unknown>) {
+  const recordId = String(row.id || '')
+  if (!recordId) return
+  insarSeriesVisible.value = true
+  insarSeriesLoading.value = true
+  selectedInsarSeries.value = null
+  try {
+    selectedInsarSeries.value = await api.getInsarTimeSeries(recordId)
+    await nextTick()
+    renderInsarSeriesChart()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '未找到该 InSAR 点的时序数据')
+  } finally {
+    insarSeriesLoading.value = false
+  }
+}
+
+function renderInsarSeriesChart() {
+  if (!insarSeriesCanvas.value || !selectedInsarSeries.value) return
+  const observations = selectedInsarSeries.value.observations || []
+  insarSeriesChart ||= echarts.init(insarSeriesCanvas.value)
+  insarSeriesChart.clear()
+  insarSeriesChart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0, data: ['累计形变', '变化率'] },
+    grid: { top: 48, left: 56, right: 56, bottom: 72 },
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0 },
+      { type: 'slider', xAxisIndex: 0, height: 22, bottom: 24 }
+    ],
+    xAxis: { type: 'category', data: observations.map((item) => item.date), boundaryGap: false },
+    yAxis: [
+      { type: 'value', name: '累计形变', scale: true },
+      { type: 'value', name: '变化率/天', scale: true }
+    ],
+    series: [
+      {
+        name: '累计形变',
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        data: observations.map((item) => item.value),
+        lineStyle: { width: 2, color: '#2563eb' },
+        itemStyle: { color: '#2563eb' }
+      },
+      {
+        name: '变化率',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        showSymbol: false,
+        data: observations.map((item) => item.rate),
+        lineStyle: { width: 2, color: '#dc2626' },
+        itemStyle: { color: '#dc2626' }
+      }
+    ]
+  })
+  insarSeriesChart.resize()
+}
+
+function closeInsarSeries() {
+  insarSeriesChart?.dispose()
+  insarSeriesChart = null
 }
 
 function mergeGraph(nextGraph: { nodes: GraphNode[]; edges: GraphEdge[] }) {
@@ -1018,6 +1108,7 @@ onMounted(refreshAll)
 onBeforeUnmount(() => {
   clearGraphPolling()
   chart?.dispose()
+  insarSeriesChart?.dispose()
 })
 watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
 </script>
@@ -1193,6 +1284,11 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                 show-overflow-tooltip
               >
                 <template #default="{ row }">{{ formatValue(row[column]) }}</template>
+              </el-table-column>
+              <el-table-column v-if="dataView === 'insar'" label="时序曲线" width="110" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" type="primary" @click="openInsarSeries(row)">曲线</el-button>
+                </template>
               </el-table-column>
               <el-table-column label="原始字段" width="110" fixed="right">
                 <template #default="{ row }">
@@ -1406,6 +1502,45 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
           </div>
         </section>
       </template>
+
+      <el-dialog
+        v-model="insarSeriesVisible"
+        title="InSAR时序曲线"
+        width="980px"
+        destroy-on-close
+        @closed="closeInsarSeries"
+        @opened="renderInsarSeriesChart"
+      >
+        <div v-loading="insarSeriesLoading" class="insar-series-dialog">
+          <div v-if="selectedInsarSeries" class="insar-series-summary">
+            <div>
+              <span>监测点</span>
+              <strong>{{ selectedInsarSeries.point_id || '-' }}</strong>
+            </div>
+            <div>
+              <span>经纬度</span>
+              <strong>{{ formatCoordinate(readNumber(selectedInsarSeries.longitude), readNumber(selectedInsarSeries.latitude)) || '-' }}</strong>
+            </div>
+            <div>
+              <span>观测期</span>
+              <strong>{{ selectedInsarSeries.start_date || '-' }} 至 {{ selectedInsarSeries.end_date || '-' }}</strong>
+            </div>
+            <div>
+              <span>观测次数</span>
+              <strong>{{ selectedInsarSeries.observation_count || 0 }}</strong>
+            </div>
+            <div>
+              <span>最新累计形变</span>
+              <strong>{{ formatValue(selectedInsarSeries.latest_value) }}</strong>
+            </div>
+            <div>
+              <span>趋势</span>
+              <strong>{{ selectedInsarSeries.trend || '-' }}</strong>
+            </div>
+          </div>
+          <div ref="insarSeriesCanvas" class="insar-series-chart" />
+        </div>
+      </el-dialog>
     </el-main>
   </el-container>
 </template>

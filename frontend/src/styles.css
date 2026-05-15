@@ -164,6 +164,42 @@ body {
   white-space: pre-wrap;
 }
 
+.insar-series-dialog {
+  min-height: 520px;
+}
+
+.insar-series-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.insar-series-summary div {
+  padding: 10px;
+  background: #f8fafb;
+  border: 1px solid #e2e8ec;
+  border-radius: 6px;
+}
+
+.insar-series-summary span {
+  display: block;
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.insar-series-summary strong {
+  color: #0f172a;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.insar-series-chart {
+  width: 100%;
+  height: 420px;
+}
+
 .graph-panel {
   min-height: 680px;
 }
@@ -406,6 +442,10 @@ body {
   }
 
   .graph-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .insar-series-summary {
     grid-template-columns: 1fr;
   }
 

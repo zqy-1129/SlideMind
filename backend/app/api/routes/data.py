@@ -1,8 +1,10 @@
 from typing import Any
 
+from bson import ObjectId
 from fastapi import APIRouter, HTTPException
 
 from app.db.mongo import get_db
+from app.services.insar_time_series import build_insar_time_series_document
 from app.services.deletion import delete_dataset_data
 from app.utils.ids import stringify_id
 
@@ -81,6 +83,20 @@ async def list_gis_features(
         "page": safe_page,
         "page_size": safe_page_size,
     }
+
+
+@router.get("/insar/time-series")
+async def get_insar_time_series(record_id: str) -> dict[str, Any]:
+    if not ObjectId.is_valid(record_id):
+        raise HTTPException(status_code=400, detail="Invalid record_id")
+    document = await get_db().insar_time_series.find_one({"source_record_id": record_id})
+    if document is None:
+        record = await get_db().tabular_records.find_one({"_id": ObjectId(record_id), "data_type": "insar"})
+        document = build_insar_time_series_document(record) if record else None
+    if document is None:
+        raise HTTPException(status_code=404, detail="InSAR time series not found")
+    document.setdefault("_id", ObjectId())
+    return stringify_id(document)
 
 
 @router.delete("/data")

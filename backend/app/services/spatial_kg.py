@@ -10,6 +10,7 @@ from bson import ObjectId
 from neo4j import Driver
 
 from app.db.mongo import get_db
+from app.services.insar_time_series import strip_insar_time_fields, summarize_insar_raw_fields
 
 ProgressLogger = Callable[[str, int], Awaitable[None]]
 
@@ -52,6 +53,7 @@ async def build_spatial_kg_from_mongo(dataset_id: str, log: ProgressLogger | Non
     await _log(log, "实体空间锚点计算完成", 45)
 
     insar_entities = _records_to_insar_entities(dataset_id, insar_records)
+    _attach_insar_collections(dataset_id, kg, insar_entities)
     kg["entities"].extend(insar_entities)
     await _log(log, f"InSAR 点转换完成：{len(insar_entities)} 个有效点", 55)
 
@@ -195,6 +197,59 @@ def _gis_document_to_entity(dataset_id: str, document: dict[str, Any]) -> dict[s
     }
 
 
+def _attach_insar_collections(dataset_id: str, kg: dict[str, Any], insar_entities: list[dict[str, Any]]) -> None:
+    if not insar_entities:
+        return
+    area_entries = _area_entries_from_kg(kg)
+    collection_ids: dict[str, str] = {}
+    collection_counts: dict[str, int] = defaultdict(int)
+
+    for entity in insar_entities:
+        geometry = _shape_or_none(entity.get("geometry"))
+        admin_name, admin_id = _admin_area_info(geometry, area_entries)
+        entity["admin_belong"] = admin_name
+        entity["admin_entity_id"] = admin_id
+        collection_key = f"{admin_name}_InSAR监测点集合"
+        collection_id = collection_ids.get(collection_key)
+        if collection_id is None:
+            collection_id = _make_id("collection", dataset_id, collection_key)
+            collection_ids[collection_key] = collection_id
+            kg["entities"].append(
+                {
+                    "__id__": collection_id,
+                    "__created_at__": _timestamp(),
+                    "entity_name": collection_key,
+                    "type": "InSAR监测点集合",
+                    "geom_type": "Collection",
+                    "geometry": None,
+                    "attributes": {"admin_name": admin_name, "category_type": "InSAR监测点"},
+                    "dataset_id": dataset_id,
+                    "source_kind": "gis_collection",
+                }
+            )
+            if admin_id:
+                kg["relations"].append(
+                    _relation(admin_id, collection_id, "包含", "行政区-分类集合关系")
+                )
+        collection_counts[collection_id] += 1
+        kg["relations"].append(_relation(collection_id, entity["__id__"], "包含", "分类集合-要素关系"))
+
+    for entity in kg["entities"]:
+        if entity["__id__"] in collection_counts:
+            entity.setdefault("attributes", {})["total_count"] = collection_counts[entity["__id__"]]
+
+
+def _area_entries_from_kg(kg: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for entity in kg.get("entities", []):
+        if entity.get("source_kind") != "gis" or entity.get("gis_category") != "area":
+            continue
+        geometry = _shape_or_none(entity.get("geometry"))
+        if geometry is not None:
+            entries.append({"entity_id": entity["__id__"], "entity_name": entity["entity_name"], "geometry": geometry})
+    return entries
+
+
 def _records_to_insar_entities(dataset_id: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
     seen_points: set[str] = set()
@@ -216,6 +271,7 @@ def _records_to_insar_entities(dataset_id: str, records: list[dict[str, Any]]) -
             for key, value in raw.items()
             if re.match(r"^D_\d{8}$", str(key)) and _is_number(value)
         }
+        time_summary = summarize_insar_raw_fields(raw)
         entity_id = _make_id("insar", dataset_id, unique_key)
         entities.append(
             {
@@ -228,11 +284,20 @@ def _records_to_insar_entities(dataset_id: str, records: list[dict[str, Any]]) -
                 "attributes": {
                     "point_id": str(point_id),
                     "point_index": index,
-                    "base_attributes": raw,
+                    "base_attributes": strip_insar_time_fields(raw),
                     "normalized_fields": normalized,
                     "velocity": velocity if velocity is not None else 0,
                     "insar_observations": observations,
                     "total_observations": len(observations),
+                    "start_date": time_summary.get("start_date"),
+                    "end_date": time_summary.get("end_date"),
+                    "observation_count": time_summary.get("observation_count"),
+                    "latest_value": time_summary.get("latest_value"),
+                    "max_settlement": time_summary.get("max_settlement"),
+                    "max_uplift": time_summary.get("max_uplift"),
+                    "cumulative_change": time_summary.get("cumulative_change"),
+                    "average_rate": time_summary.get("average_rate"),
+                    "trend": time_summary.get("trend"),
                 },
                 "dataset_id": dataset_id,
                 "mongo_id": str(record["_id"]),
@@ -491,6 +556,13 @@ def _entity_props(dataset_id: str, entity: dict[str, Any]) -> dict[str, Any]:
             "semantic_tag": entity.get("semantic_tag"),
             "centroid_lon": centroid_lon,
             "centroid_lat": centroid_lat,
+            "start_date": attributes.get("start_date") if isinstance(attributes, dict) else None,
+            "end_date": attributes.get("end_date") if isinstance(attributes, dict) else None,
+            "observation_count": attributes.get("observation_count") if isinstance(attributes, dict) else None,
+            "latest_value": attributes.get("latest_value") if isinstance(attributes, dict) else None,
+            "max_settlement": attributes.get("max_settlement") if isinstance(attributes, dict) else None,
+            "average_rate": attributes.get("average_rate") if isinstance(attributes, dict) else None,
+            "trend": attributes.get("trend") if isinstance(attributes, dict) else None,
             "geometry_json": json.dumps(entity.get("geometry"), ensure_ascii=False, default=str),
             "attributes_json": json.dumps(attributes, ensure_ascii=False, default=str),
             "spatial_anchor_json": json.dumps(entity.get("spatial_anchor") or [], ensure_ascii=False, default=str),

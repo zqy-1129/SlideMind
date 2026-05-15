@@ -6,6 +6,7 @@ from bson import ObjectId
 from app.db.milvus import get_collection
 from app.db.mongo import get_db
 from app.services.embedding import embed_text
+from app.services.insar_time_series import build_insar_time_series_document
 from app.services.normalization import normalize_record
 from app.services.parsers import (
     GIS_EXTENSIONS,
@@ -61,14 +62,17 @@ async def run_ingestion(task_id: str) -> None:
 async def _ingest_table(task: dict, file_doc: dict) -> int:
     source_file_id = str(file_doc["_id"])
     await get_db().tabular_records.delete_many({"source_file_id": source_file_id})
+    await get_db().insar_time_series.delete_many({"source_file_id": source_file_id})
     rows = parse_table(file_doc["path"])
     documents = []
     for index, row in enumerate(rows, start=1):
         row = clean_for_mongo(row)
         normalized = normalize_record(row)
         normalized = clean_for_mongo(normalized)
+        record_id = ObjectId()
         documents.append(
             {
+                "_id": record_id,
                 "dataset_id": task["dataset_id"],
                 "source_file_id": source_file_id,
                 "row_number": index,
@@ -86,6 +90,10 @@ async def _ingest_table(task: dict, file_doc: dict) -> int:
 
     if documents:
         await get_db().tabular_records.insert_many(documents)
+    if task["data_type"] == "insar":
+        series_documents = [document for record in documents if (document := build_insar_time_series_document(record))]
+        if series_documents:
+            await get_db().insar_time_series.insert_many(series_documents)
     return len(documents)
 
 

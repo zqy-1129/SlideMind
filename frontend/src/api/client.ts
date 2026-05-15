@@ -119,6 +119,31 @@ export interface GisFeature {
   created_at: string
 }
 
+export interface InsarObservation {
+  date: string
+  value: number
+  delta: number
+  rate: number
+}
+
+export interface InsarTimeSeries {
+  id: string
+  source_record_id: string
+  point_id?: string
+  longitude?: number
+  latitude?: number
+  start_date?: string
+  end_date?: string
+  observation_count: number
+  latest_value?: number
+  max_settlement?: number
+  max_uplift?: number
+  cumulative_change?: number
+  average_rate?: number
+  trend?: string
+  observations: InsarObservation[]
+}
+
 const API_BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -187,6 +212,8 @@ export const api = {
     params.set('page_size', String(pageSize))
     return request<PageResult<GisFeature>>(`/gis-features?${params.toString()}`)
   },
+  getInsarTimeSeries: (recordId: string) =>
+    request<InsarTimeSeries>(`/insar/time-series?record_id=${recordId}`),
   buildGraph: (datasetId: string, includeTextKg = true) =>
     request<GraphBuildTask>('/graph/build', {
       method: 'POST',
