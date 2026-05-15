@@ -208,9 +208,11 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   gap: 12px;
+  align-items: stretch;
 }
 
 .graph-box {
+  height: 546px;
   min-height: 520px;
   padding: 12px;
   overflow: auto;
@@ -297,9 +299,11 @@ body {
 }
 
 .node-detail {
+  height: 546px;
   min-height: 520px;
   padding: 12px;
   overflow: auto;
+  overscroll-behavior: contain;
   background: #f8fafb;
   border: 1px solid #e2e8ec;
   border-radius: 6px;
@@ -450,6 +454,7 @@ body {
   }
 
   .node-detail {
+    height: 360px;
     min-height: 260px;
   }
 
