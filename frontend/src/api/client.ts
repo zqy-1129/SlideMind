@@ -221,12 +221,13 @@ export const api = {
       body: JSON.stringify({ dataset_id: datasetId, include_text_kg: includeTextKg })
     }),
   getGraphTask: (taskId: string) => request<GraphTask>(`/graph/tasks/${taskId}`),
-  getGraph: (datasetId?: string, limit = 20, nodeType?: string, parentId?: string) => {
+  getGraph: (datasetId?: string, limit = 20, nodeType?: string, parentId?: string, showAll = false) => {
     const params = new URLSearchParams()
     if (datasetId) params.set('dataset_id', datasetId)
     params.set('limit', String(limit))
     if (nodeType) params.set('node_type', nodeType)
     if (parentId) params.set('parent_id', parentId)
+    if (showAll) params.set('show_all', 'true')
     return request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/graph?${params.toString()}`)
   },
   getGraphNodeTypes: (datasetId?: string) =>

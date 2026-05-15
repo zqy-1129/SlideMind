@@ -77,6 +77,7 @@ const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
 const graphLimit = ref(20)
+const graphShowAll = ref(false)
 const includeTextKg = ref(true)
 const expandedGraphNodeIds = ref<Set<string>>(new Set())
 const loadedGraphNodeIds = ref<Set<string>>(new Set())
@@ -464,6 +465,7 @@ function clearGraphPolling() {
 }
 
 async function refreshGraph() {
+  graphShowAll.value = false
   if (!selectedDatasetId.value) {
     graphNodes.value = []
     graphEdges.value = []
@@ -478,6 +480,20 @@ async function refreshGraph() {
   const rootIds = graph.nodes.filter((node) => isDatasetNode(node)).map((node) => node.id)
   expandedGraphNodeIds.value = new Set(rootIds)
   loadedGraphNodeIds.value = new Set(rootIds)
+  selectedGraphNode.value = null
+  await refreshGraphNodeTypes()
+  await nextTick()
+  renderGraph()
+}
+
+async function showAllGraph() {
+  if (!selectedDatasetId.value) return
+  graphShowAll.value = true
+  const graph = await api.getGraph(selectedDatasetId.value, 1000, graphNodeType.value || undefined, undefined, true)
+  graphNodes.value = graph.nodes
+  graphEdges.value = graph.edges
+  expandedGraphNodeIds.value = new Set(graph.nodes.map((node) => node.id))
+  loadedGraphNodeIds.value = new Set(graph.nodes.map((node) => node.id))
   selectedGraphNode.value = null
   await refreshGraphNodeTypes()
   await nextTick()
@@ -1017,7 +1033,7 @@ function buildVisibleGraph() {
     if (!expandedGraphNodeIds.value.has(nodeId)) return
     ;(children.get(nodeId) || [])
       .filter((childId) => childId !== nodeId)
-      .slice(0, graphLimit.value)
+      .slice(0, graphShowAll.value ? Number.MAX_SAFE_INTEGER : graphLimit.value)
       .forEach((childId) => visit(childId))
   }
 
@@ -1060,9 +1076,12 @@ function renderGraph() {
   const visibleGraph = buildVisibleGraph()
   const visibleNodes = visibleGraph.nodes
   const visibleEdges = visibleGraph.edges
-  const categories = Array.from(new Set(visibleNodes.map((node) => node.type))).map((name, index) => ({
+  const visibleTypeSet = new Set(visibleNodes.map((node) => node.type))
+  const stableTypeOrder = graphNodeTypes.value.length ? graphNodeTypes.value : Array.from(new Set(graphNodes.value.map((node) => node.type)))
+  const colorByType = new Map(stableTypeOrder.map((type, index) => [type, graphTypeColors[index % graphTypeColors.length]]))
+  const categories = stableTypeOrder.filter((name) => visibleTypeSet.has(name)).map((name) => ({
     name,
-    itemStyle: { color: graphTypeColors[index % graphTypeColors.length] }
+    itemStyle: { color: colorByType.get(name) || graphTypeColors[0] }
   }))
   const categoryIndex = new Map(categories.map((category, index) => [category.name, index]))
   chart.clear()
@@ -1073,11 +1092,23 @@ function renderGraph() {
         return `${params.data?.name || ''}<br/>${params.data?.category || ''}`
       }
     },
-    legend: [{ data: categories.map((item) => item.name), bottom: 0, type: 'scroll' }],
+    legend: [
+      {
+        data: categories.map((item) => item.name),
+        bottom: 8,
+        left: 'center',
+        type: 'scroll',
+        orient: 'horizontal',
+        itemWidth: 18,
+        itemHeight: 10
+      }
+    ],
     series: [
       {
         type: 'graph',
         layout: 'force',
+        top: 24,
+        bottom: 72,
         roam: true,
         draggable: true,
         categories,
@@ -1436,6 +1467,7 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <span>文本融合</span>
               <el-switch v-model="includeTextKg" aria-label="文本融合" />
             </div>
+            <el-button size="small" type="primary" :disabled="!selectedDatasetId" @click="showAllGraph">显示全部</el-button>
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshGraph">刷新图谱</el-button>
           </div>
           <div class="graph-workspace">
@@ -1480,7 +1512,9 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
               <el-empty v-else description="单击节点查看内容，双击节点展开关联" />
             </aside>
           </div>
-          <div class="edge-summary">{{ graphNodes.length }} 个已加载节点，{{ graphEdges.length }} 条关系，每次展开最多 {{ graphLimit }} 个关联节点</div>
+          <div class="edge-summary">
+            {{ graphNodes.length }} 个已加载节点，{{ graphEdges.length }} 条关系，{{ graphShowAll ? '当前显示全部已加载节点' : `每次展开最多 ${graphLimit} 个关联节点` }}
+          </div>
         </section>
 
         <section class="panel qa-panel">

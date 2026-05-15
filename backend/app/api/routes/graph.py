@@ -51,8 +51,9 @@ async def get_graph(
     limit: int = 20,
     node_type: str | None = None,
     parent_id: str | None = None,
+    show_all: bool = False,
 ) -> dict:
-    return read_graph(dataset_id=dataset_id, limit=limit, node_type=node_type, parent_id=parent_id)
+    return read_graph(dataset_id=dataset_id, limit=limit, node_type=node_type, parent_id=parent_id, show_all=show_all)
 
 
 @router.get("/graph/node-types")

@@ -36,12 +36,13 @@ def read_graph(
     limit: int = 20,
     node_type: str | None = None,
     parent_id: str | None = None,
+    show_all: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     driver = get_driver()
     safe_limit = min(max(limit, 1), 1000)
     if parent_id:
         return _read_graph_children(driver, dataset_id, parent_id, safe_limit)
-    if dataset_id and not node_type:
+    if dataset_id and not node_type and not show_all:
         return _read_graph_roots(driver, dataset_id, safe_limit)
 
     node_query = """
