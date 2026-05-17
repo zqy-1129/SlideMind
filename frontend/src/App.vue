@@ -48,6 +48,13 @@ interface NodeDetailSection {
   items: NodeDetailItem[]
 }
 
+interface MapOverlayPoint {
+  id: string
+  name: string
+  x: number
+  y: number
+}
+
 const activePage = ref<AppPage>('data')
 const datasets = ref<Dataset[]>([])
 const imports = ref<ImportTask[]>([])
@@ -81,6 +88,7 @@ let mapChart: echarts.ECharts | null = null
 let insarSeriesChart: echarts.ECharts | null = null
 let environmentSeriesChart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
+let mapFeatureIndex = new Map<string, GeoJsonFeature>()
 const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
@@ -93,6 +101,7 @@ const loadingGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
 const mapLayers = ref<MapLayers | null>(null)
 const selectedMapFeature = ref<GeoJsonFeature | null>(null)
+const mapInsarOverlayPoints = ref<MapOverlayPoint[]>([])
 const mapLayerVisible = ref({
   areas: true,
   waters: true,
@@ -459,6 +468,8 @@ async function refreshMapLayers() {
 function resetMapLayers() {
   mapLayers.value = null
   selectedMapFeature.value = null
+  mapInsarOverlayPoints.value = []
+  mapFeatureIndex = new Map()
   mapLoading.value = false
   mapChart?.clear()
 }
@@ -477,6 +488,7 @@ function renderSpatialMap() {
     const id = readText(feature.properties.id)
     if (id) featureById.set(id, feature)
   }
+  mapFeatureIndex = featureById
   const polygonFeatures = features.filter((feature) => isPolygonGeometry(readText(feature.geometry?.type)))
   const lineData = features.flatMap((feature) => geometryLineData(feature))
   const pointData = features.flatMap((feature) => geometryPointData(feature))
@@ -496,26 +508,8 @@ function renderSpatialMap() {
       itemStyle: { areaColor: mapFeatureFillColor(feature, 0.78) }
     }
   }))
-  const insarData = mapLayerVisible.value.insar_points
-    ? (mapLayers.value.insar_points.features || [])
-        .map((feature) => {
-          const coordinates = feature.geometry?.coordinates
-          if (!Array.isArray(coordinates)) return null
-          const lon = readNumber(coordinates[0])
-          const lat = readNumber(coordinates[1])
-          if (lon === null || lat === null) return null
-          const latest = readNumber(feature.properties.latest_value)
-          const velocity = readNumber(feature.properties.velocity)
-          return {
-            name: readText(feature.properties.name),
-            value: [lon, lat, latest ?? velocity ?? 1],
-            featureId: readText(feature.properties.id)
-          }
-        })
-        .filter((item): item is { name: string; value: number[]; featureId: string } => Boolean(item))
-    : []
-
   mapChart.clear()
+  mapChart.off('georoam')
   mapChart.setOption({
     tooltip: {
       trigger: 'item',
@@ -574,22 +568,10 @@ function renderSpatialMap() {
         itemStyle: { color: '#9333ea', borderColor: '#ffffff', borderWidth: 1 },
         emphasis: { scale: 1.5 },
         label: { show: false }
-      },
-      {
-        name: 'InSAR监测点',
-        type: 'scatter',
-        coordinateSystem: 'geo',
-        geoIndex: 0,
-        data: insarData,
-        symbolSize: 1.8,
-        progressive: 1500,
-        progressiveThreshold: 1500,
-        itemStyle: { color: '#ef4444', opacity: 0.5, borderColor: '#ffffff', borderWidth: 0 },
-        emphasis: { scale: 2 },
-        label: { show: false }
       }
     ]
   })
+  mapChart.on('georoam', updateMapInsarOverlay)
   mapChart.on('click', (params: unknown) => {
     const event = params as { data?: unknown; componentType?: string; name?: string }
     if (event.componentType === 'geo') {
@@ -602,6 +584,37 @@ function renderSpatialMap() {
     if (feature) selectedMapFeature.value = feature
   })
   mapChart.resize()
+  updateMapInsarOverlay()
+}
+
+function updateMapInsarOverlay() {
+  if (!mapChart || !mapCanvas.value || !mapLayers.value || !mapLayerVisible.value.insar_points) {
+    mapInsarOverlayPoints.value = []
+    return
+  }
+  const width = mapCanvas.value.clientWidth
+  const height = mapCanvas.value.clientHeight
+  const points: MapOverlayPoint[] = []
+  for (const feature of mapLayers.value.insar_points.features || []) {
+    const coordinates = feature.geometry?.coordinates
+    if (!Array.isArray(coordinates)) continue
+    const lon = readNumber(coordinates[0])
+    const lat = readNumber(coordinates[1])
+    const id = readText(feature.properties.id)
+    if (lon === null || lat === null || !id) continue
+    const pixel = mapChart.convertToPixel({ geoIndex: 0 }, [lon, lat])
+    if (!Array.isArray(pixel)) continue
+    const x = readNumber(pixel[0])
+    const y = readNumber(pixel[1])
+    if (x === null || y === null || x < -8 || y < -8 || x > width + 8 || y > height + 8) continue
+    points.push({ id, name: readText(feature.properties.name), x, y })
+  }
+  mapInsarOverlayPoints.value = points
+}
+
+function selectMapFeatureById(id: string) {
+  const feature = mapFeatureIndex.get(id)
+  if (feature) selectedMapFeature.value = feature
 }
 
 function isPolygonGeometry(type: string) {
@@ -1989,8 +2002,27 @@ watch(environmentSeriesView, () => {
                 <el-checkbox v-model="mapLayerVisible.buildings">建筑</el-checkbox>
                 <el-checkbox v-model="mapLayerVisible.insar_points">InSAR点</el-checkbox>
               </div>
-              <div v-if="!mapLayers" class="empty">点击“刷新地图”后加载当前数据集的空间图层</div>
-              <div ref="mapCanvas" class="spatial-map-canvas" />
+              <div class="spatial-map-stage">
+                <div v-if="!mapLayers" class="empty map-empty">点击“刷新地图”后加载当前数据集的空间图层</div>
+                <div ref="mapCanvas" class="spatial-map-canvas" />
+                <svg
+                  v-if="mapLayers && mapLayerVisible.insar_points"
+                  class="map-insar-overlay"
+                  aria-label="InSAR监测点"
+                >
+                  <circle
+                    v-for="point in mapInsarOverlayPoints"
+                    :key="point.id"
+                    class="map-insar-point"
+                    :cx="point.x"
+                    :cy="point.y"
+                    r="1.9"
+                    @click.stop="selectMapFeatureById(point.id)"
+                  >
+                    <title>{{ point.name }}</title>
+                  </circle>
+                </svg>
+              </div>
               <div v-if="mapLayers" class="map-counts">
                 行政区 {{ mapLayers.counts.areas?.loaded || 0 }}/{{ mapLayers.counts.areas?.total || 0 }}，
                 水域 {{ mapLayers.counts.waters?.loaded || 0 }}/{{ mapLayers.counts.waters?.total || 0 }}，
