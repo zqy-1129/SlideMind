@@ -462,22 +462,20 @@ function renderSpatialMap() {
   const polygonFeatures = features.filter((feature) => isPolygonGeometry(readText(feature.geometry?.type)))
   const lineData = features.flatMap((feature) => geometryLineData(feature))
   const pointData = features.flatMap((feature) => geometryPointData(feature))
-  const featureCollection = polygonFeatures.length > 0 ? { type: 'FeatureCollection', features: polygonFeatures } : fallbackMapCollection()
+  const geoFeatures = polygonFeatures.length > 0 ? polygonFeatures.map(geoRegisteredFeature) : fallbackMapCollection().features
+  const featureCollection = { type: 'FeatureCollection', features: geoFeatures }
   echarts.registerMap('slidemind-spatial-map', featureCollection as never)
-  const mapData = polygonFeatures.map((feature) => ({
+  const featureByRegionId = new Map(polygonFeatures.map((feature) => [readText(feature.properties.id), feature]))
+  const regions = polygonFeatures.map((feature) => ({
     name: readText(feature.properties.id),
-    displayName: readText(feature.properties.name),
-    value: 1,
-    feature,
     itemStyle: {
-      areaColor: mapFeatureFillColor(feature, 0.46),
+      areaColor: mapFeatureFillColor(feature, 0.52),
       borderColor: mapLayerColor(readText(feature.properties.layer_type)),
       borderWidth: feature.properties.layer_type === 'area' ? 1.4 : 1
     },
     emphasis: {
-      itemStyle: {
-        areaColor: mapFeatureFillColor(feature, 0.72)
-      }
+      label: { show: true, formatter: readText(feature.properties.name), color: '#0f172a' },
+      itemStyle: { areaColor: mapFeatureFillColor(feature, 0.78) }
     }
   }))
   const insarData = mapLayerVisible.value.insar_points
@@ -517,24 +515,17 @@ function renderSpatialMap() {
       roam: true,
       zoom: 1.08,
       scaleLimit: { min: 0.5, max: 18 },
+      regions,
       itemStyle: { areaColor: '#eef6f4', borderColor: '#94a3b8' },
+      label: {
+        show: polygonFeatures.length <= 30,
+        formatter: (params: { name?: string }) => readText(featureByRegionId.get(params.name || '')?.properties.name),
+        color: '#334155',
+        fontSize: 10
+      },
       emphasis: { itemStyle: { areaColor: '#dbeafe' } }
     },
     series: [
-      {
-        name: 'GIS要素',
-        type: 'map',
-        map: 'slidemind-spatial-map',
-        geoIndex: 0,
-        nameProperty: 'id',
-        data: mapData,
-        label: {
-          show: polygonFeatures.length <= 80,
-          formatter: (params: { data?: { displayName?: string } }) => params.data?.displayName || '',
-          fontSize: 10,
-          color: '#334155'
-        }
-      },
       {
         name: '线状要素',
         type: 'lines',
@@ -572,7 +563,13 @@ function renderSpatialMap() {
     ]
   })
   mapChart.on('click', (params: unknown) => {
-    const data = asRecord((params as { data?: unknown }).data)
+    const event = params as { data?: unknown; componentType?: string; name?: string }
+    if (event.componentType === 'geo') {
+      const feature = featureByRegionId.get(event.name || '')
+      if (feature) selectedMapFeature.value = feature
+      return
+    }
+    const data = asRecord(event.data)
     const feature = data?.feature as GeoJsonFeature | undefined
     if (feature) selectedMapFeature.value = feature
   })
@@ -581,6 +578,17 @@ function renderSpatialMap() {
 
 function isPolygonGeometry(type: string) {
   return type === 'Polygon' || type === 'MultiPolygon'
+}
+
+function geoRegisteredFeature(feature: GeoJsonFeature) {
+  return {
+    ...feature,
+    properties: {
+      ...feature.properties,
+      displayName: feature.properties.name,
+      name: feature.properties.id
+    }
+  }
 }
 
 function geometryLineData(feature: GeoJsonFeature) {
