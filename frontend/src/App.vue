@@ -216,6 +216,7 @@ async function refreshAll() {
 async function refreshDatasetScope() {
   recordPage.value = 1
   gisPage.value = 1
+  resetMapLayers()
   if (!selectedDatasetId.value) {
     imports.value = []
     records.value = []
@@ -226,12 +227,9 @@ async function refreshDatasetScope() {
     chunks.value = []
     graphNodes.value = []
     graphEdges.value = []
-    mapLayers.value = null
-    selectedMapFeature.value = null
     return
   }
   await Promise.all([refreshImports(), refreshDataContent(), refreshGraph()])
-  void refreshMapLayers()
 }
 
 async function createDataset() {
@@ -322,7 +320,7 @@ async function uploadFile() {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
-  void refreshMapLayers()
+  resetMapLayers()
 }
 
 function isGisFile(filename: string) {
@@ -337,7 +335,7 @@ async function retryImport(taskId: string) {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
-  void refreshMapLayers()
+  resetMapLayers()
 }
 
 async function deleteImportTask(row: ImportTask) {
@@ -350,7 +348,7 @@ async function deleteImportTask(row: ImportTask) {
   ElMessage.success('导入任务及相关数据已删除')
   await refreshImports()
   await refreshDataContent()
-  void refreshMapLayers()
+  resetMapLayers()
 }
 
 async function deleteCurrentData() {
@@ -369,7 +367,7 @@ async function deleteCurrentData() {
   gisPage.value = 1
   await refreshDataContent()
   await refreshImports()
-  void refreshMapLayers()
+  resetMapLayers()
 }
 
 async function refreshImports() {
@@ -442,10 +440,13 @@ async function changeGisPage(page: number) {
 
 async function refreshMapLayers() {
   if (!selectedDatasetId.value) return
+  const requestDatasetId = selectedDatasetId.value
   mapLoading.value = true
   selectedMapFeature.value = null
   try {
-    mapLayers.value = await api.getMapLayers(selectedDatasetId.value)
+    const layers = await api.getMapLayers(requestDatasetId)
+    if (selectedDatasetId.value !== requestDatasetId) return
+    mapLayers.value = layers
     await nextTick()
     renderSpatialMap()
   } catch (error) {
@@ -455,11 +456,27 @@ async function refreshMapLayers() {
   }
 }
 
+function resetMapLayers() {
+  mapLayers.value = null
+  selectedMapFeature.value = null
+  mapLoading.value = false
+  mapChart?.clear()
+}
+
 function renderSpatialMap() {
   if (!mapCanvas.value || !mapLayers.value) return
   mapChart ||= echarts.init(mapCanvas.value, undefined, { renderer: 'canvas', useDirtyRect: true })
   mapChart.off('click')
   const features = visibleMapFeatures()
+  const featureById = new Map<string, GeoJsonFeature>()
+  for (const feature of features) {
+    const id = readText(feature.properties.id)
+    if (id) featureById.set(id, feature)
+  }
+  for (const feature of mapLayers.value.insar_points.features || []) {
+    const id = readText(feature.properties.id)
+    if (id) featureById.set(id, feature)
+  }
   const polygonFeatures = features.filter((feature) => isPolygonGeometry(readText(feature.geometry?.type)))
   const lineData = features.flatMap((feature) => geometryLineData(feature))
   const pointData = features.flatMap((feature) => geometryPointData(feature))
@@ -492,18 +509,18 @@ function renderSpatialMap() {
           return {
             name: readText(feature.properties.name),
             value: [lon, lat, latest ?? velocity ?? 1],
-            feature
+            featureId: readText(feature.properties.id)
           }
         })
-        .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature } => Boolean(item))
+        .filter((item): item is { name: string; value: number[]; featureId: string } => Boolean(item))
     : []
 
   mapChart.clear()
   mapChart.setOption({
     tooltip: {
       trigger: 'item',
-      formatter: (params: { data?: { displayName?: string; feature?: GeoJsonFeature }; seriesName?: string; name?: string }) => {
-        const feature = params.data?.feature || featureByRegionId.get(params.name || '')
+      formatter: (params: { data?: { displayName?: string; featureId?: string }; seriesName?: string; name?: string }) => {
+        const feature = (params.data?.featureId ? featureById.get(params.data.featureId) : undefined) || featureByRegionId.get(params.name || '')
         const properties = feature?.properties || {}
         const name = params.data?.displayName || readText(properties.name) || params.name || ''
         const type = readText(properties.layer_type_name) || params.seriesName || ''
@@ -565,8 +582,6 @@ function renderSpatialMap() {
         geoIndex: 0,
         data: insarData,
         symbolSize: 1.8,
-        large: true,
-        largeThreshold: 1000,
         progressive: 1500,
         progressiveThreshold: 1500,
         itemStyle: { color: '#ef4444', opacity: 0.5, borderColor: '#ffffff', borderWidth: 0 },
@@ -583,7 +598,7 @@ function renderSpatialMap() {
       return
     }
     const data = asRecord(event.data)
-    const feature = data?.feature as GeoJsonFeature | undefined
+    const feature = data?.featureId ? featureById.get(readText(data.featureId)) : undefined
     if (feature) selectedMapFeature.value = feature
   })
   mapChart.resize()
@@ -608,13 +623,14 @@ function geometryLineData(feature: GeoJsonFeature) {
   const type = readText(feature.geometry?.type)
   const coordinates = feature.geometry?.coordinates
   const lineColor = mapLayerColor(readText(feature.properties.layer_type))
+  const featureId = readText(feature.properties.id)
   if (type === 'LineString' && Array.isArray(coordinates)) {
-    return [{ name: readText(feature.properties.name), coords: toCoordinatePairs(coordinates), feature, lineColor }]
+    return [{ name: readText(feature.properties.name), coords: toCoordinatePairs(coordinates), featureId, lineColor }]
   }
   if (type === 'MultiLineString' && Array.isArray(coordinates)) {
     return coordinates
       .filter((line) => Array.isArray(line))
-      .map((line) => ({ name: readText(feature.properties.name), coords: toCoordinatePairs(line), feature, lineColor }))
+      .map((line) => ({ name: readText(feature.properties.name), coords: toCoordinatePairs(line), featureId, lineColor }))
       .filter((item) => item.coords.length >= 2)
   }
   return []
@@ -623,10 +639,11 @@ function geometryLineData(feature: GeoJsonFeature) {
 function geometryPointData(feature: GeoJsonFeature) {
   const type = readText(feature.geometry?.type)
   const coordinates = feature.geometry?.coordinates
+  const featureId = readText(feature.properties.id)
   if (type === 'Point' && Array.isArray(coordinates)) {
     const lon = readNumber(coordinates[0])
     const lat = readNumber(coordinates[1])
-    return lon === null || lat === null ? [] : [{ name: readText(feature.properties.name), value: [lon, lat, 1], feature }]
+    return lon === null || lat === null ? [] : [{ name: readText(feature.properties.name), value: [lon, lat, 1], featureId }]
   }
   if (type === 'MultiPoint' && Array.isArray(coordinates)) {
     return coordinates
@@ -634,9 +651,9 @@ function geometryPointData(feature: GeoJsonFeature) {
         if (!Array.isArray(point)) return null
         const lon = readNumber(point[0])
         const lat = readNumber(point[1])
-        return lon === null || lat === null ? null : { name: readText(feature.properties.name), value: [lon, lat, 1], feature }
+        return lon === null || lat === null ? null : { name: readText(feature.properties.name), value: [lon, lat, 1], featureId }
       })
-      .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature } => Boolean(item))
+      .filter((item): item is { name: string; value: number[]; featureId: string } => Boolean(item))
   }
   return []
 }
@@ -1972,7 +1989,7 @@ watch(environmentSeriesView, () => {
                 <el-checkbox v-model="mapLayerVisible.buildings">建筑</el-checkbox>
                 <el-checkbox v-model="mapLayerVisible.insar_points">InSAR点</el-checkbox>
               </div>
-              <div v-if="!mapLayers" class="empty">当前数据集暂无可显示的空间数据</div>
+              <div v-if="!mapLayers" class="empty">点击“刷新地图”后加载当前数据集的空间图层</div>
               <div ref="mapCanvas" class="spatial-map-canvas" />
               <div v-if="mapLayers" class="map-counts">
                 行政区 {{ mapLayers.counts.areas?.loaded || 0 }}/{{ mapLayers.counts.areas?.total || 0 }}，
