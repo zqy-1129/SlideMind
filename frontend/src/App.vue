@@ -33,7 +33,7 @@ import {
 } from './api/client'
 
 type AppPage = 'data' | 'analysis'
-type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'map' | 'documents' | 'chunks'
+type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
 type NodeDetailMode = 'formatted' | 'raw'
 type EnvironmentDataType = 'rainfall' | 'water_level'
 
@@ -117,7 +117,6 @@ const dataLoading = ref(false)
 const selectedDataset = computed(() => datasets.value.find((item) => item.id === selectedDatasetId.value))
 const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].includes(dataView.value))
 const isGisView = computed(() => dataView.value === 'gis_vector')
-const canDeleteCurrentData = computed(() => dataView.value !== 'map')
 const graphBuilding = computed(() => graphTask.value?.status === 'queued' || graphTask.value?.status === 'running')
 const graphTaskLastLog = computed(() => graphTask.value?.logs?.at(-1) || '')
 const graphTypeColors = [
@@ -139,7 +138,6 @@ const dataViewLabel = computed(() => {
     water_level: '库水位数据',
     rainfall: '降雨数据',
     gis_vector: 'GIS矢量数据',
-    map: '空间地图',
     documents: '文本资料',
     chunks: '文本切片'
   }
@@ -232,7 +230,7 @@ async function refreshDatasetScope() {
     selectedMapFeature.value = null
     return
   }
-  await Promise.all([refreshImports(), refreshDataContent(), refreshGraph()])
+  await Promise.all([refreshImports(), refreshDataContent(), refreshMapLayers(), refreshGraph()])
 }
 
 async function createDataset() {
@@ -323,6 +321,7 @@ async function uploadFile() {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
+  await refreshMapLayers()
 }
 
 function isGisFile(filename: string) {
@@ -337,6 +336,7 @@ async function retryImport(taskId: string) {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
+  await refreshMapLayers()
 }
 
 async function deleteImportTask(row: ImportTask) {
@@ -349,15 +349,12 @@ async function deleteImportTask(row: ImportTask) {
   ElMessage.success('导入任务及相关数据已删除')
   await refreshImports()
   await refreshDataContent()
+  await refreshMapLayers()
 }
 
 async function deleteCurrentData() {
   if (!selectedDatasetId.value) {
     ElMessage.warning('请先选择数据集')
-    return
-  }
-  if (!canDeleteCurrentData.value) {
-    ElMessage.warning('空间地图是展示视图，请切换到具体数据类型后删除')
     return
   }
   await ElMessageBox.confirm(`确定删除当前数据集下的“${dataViewLabel.value}”吗？`, '删除数据', {
@@ -371,6 +368,7 @@ async function deleteCurrentData() {
   gisPage.value = 1
   await refreshDataContent()
   await refreshImports()
+  await refreshMapLayers()
 }
 
 async function refreshImports() {
@@ -401,17 +399,6 @@ async function refreshDataContent() {
       gisFeatures.value = page.items
       gisTotal.value = page.total
       records.value = []
-      documents.value = []
-      chunks.value = []
-      return
-    }
-
-    if (dataView.value === 'map') {
-      await refreshMapLayers()
-      records.value = []
-      gisFeatures.value = []
-      recordTotal.value = 0
-      gisTotal.value = 0
       documents.value = []
       chunks.value = []
       return
@@ -483,13 +470,13 @@ function renderSpatialMap() {
     value: 1,
     feature,
     itemStyle: {
-      areaColor: mapLayerColor(readText(feature.properties.layer_type), 0.36),
+      areaColor: mapFeatureFillColor(feature, 0.46),
       borderColor: mapLayerColor(readText(feature.properties.layer_type)),
       borderWidth: feature.properties.layer_type === 'area' ? 1.4 : 1
     },
     emphasis: {
       itemStyle: {
-        areaColor: mapLayerColor(readText(feature.properties.layer_type), 0.62)
+        areaColor: mapFeatureFillColor(feature, 0.72)
       }
     }
   }))
@@ -691,6 +678,36 @@ function mapLayerColor(layerType: string, alpha = 1) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+function mapFeatureFillColor(feature: GeoJsonFeature, alpha = 1) {
+  const layerType = readText(feature.properties.layer_type)
+  if (layerType !== 'area') return mapLayerColor(layerType, alpha)
+  const palette: Array<[number, number, number]> = [
+    [22, 106, 91],
+    [217, 119, 6],
+    [37, 99, 235],
+    [147, 51, 234],
+    [220, 38, 38],
+    [8, 145, 178],
+    [101, 163, 13],
+    [190, 18, 60],
+    [71, 85, 105],
+    [124, 58, 237],
+    [13, 148, 136],
+    [234, 88, 12]
+  ]
+  const key = readText(feature.properties.name) || readText(feature.properties.id)
+  const [r, g, b] = palette[Math.abs(hashText(key)) % palette.length]
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function hashText(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) | 0
+  }
+  return hash
+}
+
 function mapPointSize(value: number | null) {
   if (value === null) return 10
   return Math.max(8, Math.min(24, 8 + Math.abs(value) * 0.7))
@@ -728,6 +745,7 @@ function selectedMapItems() {
   return compactItems([
     { label: '名称', value: selectedMapTitle() },
     { label: '类型', value: selectedMapType() },
+    { label: '所属区域', value: readText(properties.admin_name) },
     { label: '几何', value: readableGeometryType(readText(properties.geometry_type) || readText(selectedMapFeature.value?.geometry?.type)) },
     { label: '坐标/代表点', value: selectedMapCoordinate() },
     { label: '点号', value: readText(properties.point_id) },
@@ -1620,6 +1638,9 @@ onBeforeUnmount(() => {
 })
 watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
 watch(mapLayerVisible, () => nextTick(renderSpatialMap), { deep: true })
+watch(activePage, () => {
+  if (activePage.value === 'data') nextTick(renderSpatialMap)
+})
 watch(environmentSeriesView, () => {
   if (environmentSeriesView.value === 'chart') nextTick(renderEnvironmentSeriesChart)
 })
@@ -1757,7 +1778,7 @@ watch(environmentSeriesView, () => {
             <el-icon><Tickets /></el-icon>
             <span>数据内容：{{ selectedDataset?.name || '未选择数据集' }}</span>
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshDataContent">刷新</el-button>
-            <el-button size="small" type="danger" :icon="Delete" :disabled="!selectedDatasetId || !canDeleteCurrentData" @click="deleteCurrentData">
+            <el-button size="small" type="danger" :icon="Delete" :disabled="!selectedDatasetId" @click="deleteCurrentData">
               删除当前数据
             </el-button>
           </div>
@@ -1770,7 +1791,6 @@ watch(environmentSeriesView, () => {
               { label: '库水位数据', value: 'water_level' },
               { label: '降雨数据', value: 'rainfall' },
               { label: 'GIS矢量', value: 'gis_vector' },
-              { label: '空间地图', value: 'map' },
               { label: '文本资料', value: 'documents' },
               { label: '文本切片', value: 'chunks' }
             ]"
@@ -1877,54 +1897,6 @@ watch(environmentSeriesView, () => {
             </div>
           </template>
 
-          <template v-else-if="dataView === 'map'">
-            <div v-loading="dataLoading || mapLoading" class="spatial-map-layout">
-              <div class="spatial-map-main">
-                <div class="map-toolbar">
-                  <el-checkbox v-model="mapLayerVisible.areas">行政区</el-checkbox>
-                  <el-checkbox v-model="mapLayerVisible.waters">水域</el-checkbox>
-                  <el-checkbox v-model="mapLayerVisible.traffics">交通</el-checkbox>
-                  <el-checkbox v-model="mapLayerVisible.buildings">建筑</el-checkbox>
-                  <el-checkbox v-model="mapLayerVisible.insar_points">InSAR点</el-checkbox>
-                  <el-button size="small" :icon="Refresh" @click="refreshMapLayers">刷新地图</el-button>
-                </div>
-                <div v-if="!mapLayers" class="empty">当前数据集暂无可显示的空间数据</div>
-                <div ref="mapCanvas" class="spatial-map-canvas" />
-                <div v-if="mapLayers" class="map-counts">
-                  行政区 {{ mapLayers.counts.areas?.loaded || 0 }}/{{ mapLayers.counts.areas?.total || 0 }}，
-                  水域 {{ mapLayers.counts.waters?.loaded || 0 }}/{{ mapLayers.counts.waters?.total || 0 }}，
-                  交通 {{ mapLayers.counts.traffics?.loaded || 0 }}/{{ mapLayers.counts.traffics?.total || 0 }}，
-                  建筑 {{ mapLayers.counts.buildings?.loaded || 0 }}/{{ mapLayers.counts.buildings?.total || 0 }}，
-                  InSAR {{ mapLayers.counts.insar_points?.loaded || 0 }}
-                </div>
-              </div>
-              <aside class="map-detail">
-                <div class="node-detail-title">
-                  <el-icon><Location /></el-icon>
-                  <span>空间要素详情</span>
-                </div>
-                <template v-if="selectedMapFeature">
-                  <div class="map-detail-head">
-                    <div>
-                      <h3>{{ selectedMapTitle() }}</h3>
-                      <el-tag>{{ selectedMapType() }}</el-tag>
-                    </div>
-                    <el-button v-if="isSelectedMapInsar()" size="small" type="primary" @click="openSelectedMapInsarSeries">
-                      时序曲线
-                    </el-button>
-                  </div>
-                  <dl class="detail-list">
-                    <div v-for="item in selectedMapItems()" :key="item.label" class="detail-item" :class="{ wide: item.wide }">
-                      <dt>{{ item.label }}</dt>
-                      <dd>{{ item.value }}</dd>
-                    </div>
-                  </dl>
-                </template>
-                <el-empty v-else description="点击地图区域或 InSAR 点查看详情" />
-              </aside>
-            </div>
-          </template>
-
           <el-table
             v-else-if="dataView === 'documents'"
             v-loading="dataLoading"
@@ -1964,6 +1936,59 @@ watch(environmentSeriesView, () => {
               </div>
             </el-col>
           </el-row>
+        </section>
+
+        <section class="panel map-panel">
+          <div class="panel-title">
+            <el-icon><Location /></el-icon>
+            <span>空间地图：{{ selectedDataset?.name || '未选择数据集' }}</span>
+            <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshMapLayers">刷新地图</el-button>
+          </div>
+          <el-empty v-if="!selectedDatasetId" description="请先选择数据集" />
+          <div v-else v-loading="mapLoading" class="spatial-map-layout">
+            <div class="spatial-map-main">
+              <div class="map-toolbar">
+                <el-checkbox v-model="mapLayerVisible.areas">行政区</el-checkbox>
+                <el-checkbox v-model="mapLayerVisible.waters">水域</el-checkbox>
+                <el-checkbox v-model="mapLayerVisible.traffics">交通</el-checkbox>
+                <el-checkbox v-model="mapLayerVisible.buildings">建筑</el-checkbox>
+                <el-checkbox v-model="mapLayerVisible.insar_points">InSAR点</el-checkbox>
+              </div>
+              <div v-if="!mapLayers" class="empty">当前数据集暂无可显示的空间数据</div>
+              <div ref="mapCanvas" class="spatial-map-canvas" />
+              <div v-if="mapLayers" class="map-counts">
+                行政区 {{ mapLayers.counts.areas?.loaded || 0 }}/{{ mapLayers.counts.areas?.total || 0 }}，
+                水域 {{ mapLayers.counts.waters?.loaded || 0 }}/{{ mapLayers.counts.waters?.total || 0 }}，
+                交通 {{ mapLayers.counts.traffics?.loaded || 0 }}/{{ mapLayers.counts.traffics?.total || 0 }}，
+                建筑 {{ mapLayers.counts.buildings?.loaded || 0 }}/{{ mapLayers.counts.buildings?.total || 0 }}，
+                InSAR {{ mapLayers.counts.insar_points?.loaded || 0 }}
+              </div>
+            </div>
+            <aside class="map-detail">
+              <div class="node-detail-title">
+                <el-icon><Location /></el-icon>
+                <span>空间要素详情</span>
+              </div>
+              <template v-if="selectedMapFeature">
+                <div class="map-detail-head">
+                  <div>
+                    <h3>{{ selectedMapTitle() }}</h3>
+                    <el-tag>{{ selectedMapType() }}</el-tag>
+                  </div>
+                  <el-button v-if="isSelectedMapInsar()" size="small" type="primary" @click="openSelectedMapInsarSeries">
+                    时序曲线
+                  </el-button>
+                </div>
+                <dl class="detail-list">
+                  <div v-for="item in selectedMapItems()" :key="item.label" class="detail-item" :class="{ wide: item.wide }">
+                    <dt>{{ item.label }}</dt>
+                    <dd>{{ item.value }}</dd>
+                  </div>
+                </dl>
+              </template>
+              <el-empty v-else description="点击地图区域或 InSAR 点查看详情" />
+            </aside>
+          </div>
         </section>
       </template>
 

@@ -14,7 +14,8 @@ GIS_LAYER_CONFIG = {
     "traffic": ("traffics", "交通"),
     "build": ("buildings", "建筑"),
 }
-NAME_FIELDS = ("name", "NAME", "Name", "名称", "name_1", "name_2", "id", "ID")
+AREA_NAME_FIELDS = ("name", "NAME", "Name", "名称", "name_1", "name_2")
+FEATURE_NAME_FIELDS = ("name", "NAME", "Name", "名称", "name_1")
 
 
 @router.get("/map/layers")
@@ -37,15 +38,27 @@ async def get_map_layers(
         "counts": {},
     }
     all_bounds: list[list[float]] = []
+    area_entries = await _load_area_entries(dataset_id)
 
     for category, (layer_key, category_name) in GIS_LAYER_CONFIG.items():
         query = {"dataset_id": dataset_id, "gis_category": category}
         total = await get_db().gis_features.count_documents(query)
         limit = total if category == "area" else safe_limit
         cursor = get_db().gis_features.find(query).sort("feature_index", 1).limit(limit)
+        sequence_by_region: dict[str, int] = {}
         features = []
         async for document in cursor:
-            feature = _gis_feature(document, category_name, simplify)
+            admin_name = _admin_name_for_document(document, area_entries)
+            sequence_key = f"{admin_name}:{category}"
+            sequence_by_region[sequence_key] = sequence_by_region.get(sequence_key, 0) + 1
+            feature = _gis_feature(
+                document,
+                category,
+                category_name,
+                simplify,
+                admin_name,
+                sequence_by_region[sequence_key],
+            )
             if feature is None:
                 continue
             features.append(feature)
@@ -70,24 +83,50 @@ async def get_map_layers(
     return layers
 
 
+async def _load_area_entries(dataset_id: str) -> list[dict[str, Any]]:
+    entries = []
+    cursor = get_db().gis_features.find({"dataset_id": dataset_id, "gis_category": "area"})
+    async for document in cursor:
+        geometry = document.get("geometry")
+        if not isinstance(geometry, dict):
+            continue
+        entries.append(
+            {
+                "name": _explicit_name(document.get("properties") or {}, AREA_NAME_FIELDS) or "未知区域",
+                "geometry": geometry,
+                "bbox": document.get("bbox") or _geometry_bbox(geometry),
+            }
+        )
+    return entries
+
+
 def _feature_collection(features: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features or []}
 
 
-def _gis_feature(document: dict[str, Any], category_name: str, simplify: bool) -> dict[str, Any] | None:
+def _gis_feature(
+    document: dict[str, Any],
+    category: str,
+    category_name: str,
+    simplify: bool,
+    admin_name: str,
+    sequence: int,
+) -> dict[str, Any] | None:
     geometry = document.get("geometry")
     if not isinstance(geometry, dict):
         return None
     display_geometry = _simplify_geometry(geometry) if simplify else geometry
     properties = document.get("properties") or {}
-    name = _feature_name(properties, document.get("layer_name"), document.get("feature_index"), category_name)
+    explicit_name = _explicit_name(properties, AREA_NAME_FIELDS if category == "area" else FEATURE_NAME_FIELDS)
+    name = explicit_name or f"{admin_name}_{category_name}_{sequence}"
     return {
         "type": "Feature",
         "geometry": display_geometry,
         "properties": {
             "id": str(document["_id"]),
             "name": name,
-            "layer_type": document.get("gis_category"),
+            "admin_name": admin_name,
+            "layer_type": category,
             "layer_type_name": category_name,
             "geometry_type": document.get("geometry_type") or geometry.get("type"),
             "source_file_id": document.get("source_file_id"),
@@ -130,17 +169,51 @@ def _insar_feature(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _feature_name(properties: dict[str, Any], layer_name: str | None, index: int | None, category_name: str) -> str:
-    for field in NAME_FIELDS:
+def _explicit_name(properties: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    for field in fields:
         value = properties.get(field)
-        if value not in (None, ""):
-            text = str(value).strip()
-            if text and not text.isdigit():
-                return text
-    admin = properties.get("name_2") or properties.get("admin_belong")
-    if admin:
-        return f"{admin}_{category_name}"
-    return f"{layer_name or category_name}_{index or 1}"
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if text and not _weak_name(text):
+            return text
+    return None
+
+
+def _weak_name(value: str) -> bool:
+    compact = value.replace(",", "").replace("，", "").replace("_", "").replace("-", "").strip()
+    return compact.isdigit() or (len(compact) >= 16 and all(char in "0123456789abcdefABCDEF" for char in compact))
+
+
+def _admin_name_for_document(document: dict[str, Any], areas: list[dict[str, Any]]) -> str:
+    properties = document.get("properties") or {}
+    explicit = properties.get("admin_belong") or properties.get("name_2")
+    if explicit not in (None, ""):
+        return str(explicit).strip()
+    if document.get("gis_category") == "area":
+        return _explicit_name(properties, AREA_NAME_FIELDS) or "未知区域"
+
+    centroid = document.get("centroid") or {}
+    lon = _first_number(centroid.get("longitude"))
+    lat = _first_number(centroid.get("latitude"))
+    if lon is None or lat is None:
+        return "未知区域"
+    for area in areas:
+        bbox = area.get("bbox")
+        if bbox and not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+            continue
+        if _point_in_geometry(lon, lat, area["geometry"]):
+            return area["name"]
+    return "未知区域"
+
+
+def _point_in_geometry(lon: float, lat: float, geometry: dict[str, Any]) -> bool:
+    try:
+        from shapely.geometry import Point, shape
+
+        return shape(geometry).contains(Point(lon, lat))
+    except Exception:
+        return False
 
 
 def _important_properties(properties: dict[str, Any]) -> dict[str, Any]:
