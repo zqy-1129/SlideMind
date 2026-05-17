@@ -472,9 +472,12 @@ function renderSpatialMap() {
   mapChart ||= echarts.init(mapCanvas.value)
   mapChart.off('click')
   const features = visibleMapFeatures()
-  const featureCollection = features.length > 0 ? { type: 'FeatureCollection', features } : fallbackMapCollection()
+  const polygonFeatures = features.filter((feature) => isPolygonGeometry(readText(feature.geometry?.type)))
+  const lineData = features.flatMap((feature) => geometryLineData(feature))
+  const pointData = features.flatMap((feature) => geometryPointData(feature))
+  const featureCollection = polygonFeatures.length > 0 ? { type: 'FeatureCollection', features: polygonFeatures } : fallbackMapCollection()
   echarts.registerMap('slidemind-spatial-map', featureCollection as never)
-  const mapData = features.map((feature) => ({
+  const mapData = polygonFeatures.map((feature) => ({
     name: readText(feature.properties.id),
     displayName: readText(feature.properties.name),
     value: 1,
@@ -539,11 +542,35 @@ function renderSpatialMap() {
         nameProperty: 'id',
         data: mapData,
         label: {
-          show: features.length <= 80,
+          show: polygonFeatures.length <= 80,
           formatter: (params: { data?: { displayName?: string } }) => params.data?.displayName || '',
           fontSize: 10,
           color: '#334155'
         }
+      },
+      {
+        name: '线状要素',
+        type: 'lines',
+        coordinateSystem: 'geo',
+        data: lineData,
+        polyline: true,
+        large: true,
+        lineStyle: {
+          width: 1.5,
+          opacity: 0.75,
+          color: (params: { data?: { lineColor?: string } }) => params.data?.lineColor || '#d97706'
+        },
+        emphasis: { lineStyle: { width: 3, opacity: 1 } }
+      },
+      {
+        name: '点状要素',
+        type: 'scatter',
+        coordinateSystem: 'geo',
+        data: pointData,
+        symbolSize: 8,
+        itemStyle: { color: '#9333ea', borderColor: '#ffffff', borderWidth: 1 },
+        emphasis: { scale: 1.5 },
+        label: { show: false }
       },
       {
         name: 'InSAR监测点',
@@ -563,6 +590,59 @@ function renderSpatialMap() {
     if (feature) selectedMapFeature.value = feature
   })
   mapChart.resize()
+}
+
+function isPolygonGeometry(type: string) {
+  return type === 'Polygon' || type === 'MultiPolygon'
+}
+
+function geometryLineData(feature: GeoJsonFeature) {
+  const type = readText(feature.geometry?.type)
+  const coordinates = feature.geometry?.coordinates
+  const lineColor = mapLayerColor(readText(feature.properties.layer_type))
+  if (type === 'LineString' && Array.isArray(coordinates)) {
+    return [{ name: readText(feature.properties.name), coords: toCoordinatePairs(coordinates), feature, lineColor }]
+  }
+  if (type === 'MultiLineString' && Array.isArray(coordinates)) {
+    return coordinates
+      .filter((line) => Array.isArray(line))
+      .map((line) => ({ name: readText(feature.properties.name), coords: toCoordinatePairs(line), feature, lineColor }))
+      .filter((item) => item.coords.length >= 2)
+  }
+  return []
+}
+
+function geometryPointData(feature: GeoJsonFeature) {
+  const type = readText(feature.geometry?.type)
+  const coordinates = feature.geometry?.coordinates
+  if (type === 'Point' && Array.isArray(coordinates)) {
+    const lon = readNumber(coordinates[0])
+    const lat = readNumber(coordinates[1])
+    return lon === null || lat === null ? [] : [{ name: readText(feature.properties.name), value: [lon, lat, 1], feature }]
+  }
+  if (type === 'MultiPoint' && Array.isArray(coordinates)) {
+    return coordinates
+      .map((point) => {
+        if (!Array.isArray(point)) return null
+        const lon = readNumber(point[0])
+        const lat = readNumber(point[1])
+        return lon === null || lat === null ? null : { name: readText(feature.properties.name), value: [lon, lat, 1], feature }
+      })
+      .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature } => Boolean(item))
+  }
+  return []
+}
+
+function toCoordinatePairs(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((point) => {
+      if (!Array.isArray(point)) return null
+      const lon = readNumber(point[0])
+      const lat = readNumber(point[1])
+      return lon === null || lat === null ? null : [lon, lat]
+    })
+    .filter((point): point is number[] => Boolean(point))
 }
 
 function visibleMapFeatures() {
