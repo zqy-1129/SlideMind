@@ -230,7 +230,8 @@ async function refreshDatasetScope() {
     selectedMapFeature.value = null
     return
   }
-  await Promise.all([refreshImports(), refreshDataContent(), refreshMapLayers(), refreshGraph()])
+  await Promise.all([refreshImports(), refreshDataContent(), refreshGraph()])
+  void refreshMapLayers()
 }
 
 async function createDataset() {
@@ -321,7 +322,7 @@ async function uploadFile() {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
-  await refreshMapLayers()
+  void refreshMapLayers()
 }
 
 function isGisFile(filename: string) {
@@ -336,7 +337,7 @@ async function retryImport(taskId: string) {
   recordPage.value = 1
   gisPage.value = 1
   await refreshDataContent()
-  await refreshMapLayers()
+  void refreshMapLayers()
 }
 
 async function deleteImportTask(row: ImportTask) {
@@ -349,7 +350,7 @@ async function deleteImportTask(row: ImportTask) {
   ElMessage.success('导入任务及相关数据已删除')
   await refreshImports()
   await refreshDataContent()
-  await refreshMapLayers()
+  void refreshMapLayers()
 }
 
 async function deleteCurrentData() {
@@ -368,7 +369,7 @@ async function deleteCurrentData() {
   gisPage.value = 1
   await refreshDataContent()
   await refreshImports()
-  await refreshMapLayers()
+  void refreshMapLayers()
 }
 
 async function refreshImports() {
@@ -456,7 +457,7 @@ async function refreshMapLayers() {
 
 function renderSpatialMap() {
   if (!mapCanvas.value || !mapLayers.value) return
-  mapChart ||= echarts.init(mapCanvas.value)
+  mapChart ||= echarts.init(mapCanvas.value, undefined, { renderer: 'canvas', useDirtyRect: true })
   mapChart.off('click')
   const features = visibleMapFeatures()
   const polygonFeatures = features.filter((feature) => isPolygonGeometry(readText(feature.geometry?.type)))
@@ -491,11 +492,10 @@ function renderSpatialMap() {
           return {
             name: readText(feature.properties.name),
             value: [lon, lat, latest ?? velocity ?? 1],
-            feature,
-            symbolSize: mapPointSize(latest ?? velocity)
+            feature
           }
         })
-        .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature; symbolSize: number } => Boolean(item))
+        .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature } => Boolean(item))
     : []
 
   mapChart.clear()
@@ -503,13 +503,15 @@ function renderSpatialMap() {
     tooltip: {
       trigger: 'item',
       formatter: (params: { data?: { displayName?: string; feature?: GeoJsonFeature }; seriesName?: string; name?: string }) => {
-        const properties = params.data?.feature?.properties || {}
+        const feature = params.data?.feature || featureByRegionId.get(params.name || '')
+        const properties = feature?.properties || {}
         const name = params.data?.displayName || readText(properties.name) || params.name || ''
         const type = readText(properties.layer_type_name) || params.seriesName || ''
         const trend = readText(properties.trend)
         return [name, type, trend ? `趋势：${trend}` : ''].filter(Boolean).join('<br/>')
       }
     },
+    animation: false,
     geo: {
       map: 'slidemind-spatial-map',
       roam: true,
@@ -530,9 +532,12 @@ function renderSpatialMap() {
         name: '线状要素',
         type: 'lines',
         coordinateSystem: 'geo',
+        geoIndex: 0,
         data: lineData,
         polyline: true,
         large: true,
+        progressive: 800,
+        progressiveThreshold: 1200,
         lineStyle: {
           width: 1.5,
           opacity: 0.75,
@@ -544,8 +549,11 @@ function renderSpatialMap() {
         name: '点状要素',
         type: 'scatter',
         coordinateSystem: 'geo',
+        geoIndex: 0,
         data: pointData,
-        symbolSize: 8,
+        symbolSize: 5,
+        progressive: 1000,
+        progressiveThreshold: 1200,
         itemStyle: { color: '#9333ea', borderColor: '#ffffff', borderWidth: 1 },
         emphasis: { scale: 1.5 },
         label: { show: false }
@@ -554,10 +562,15 @@ function renderSpatialMap() {
         name: 'InSAR监测点',
         type: 'scatter',
         coordinateSystem: 'geo',
+        geoIndex: 0,
         data: insarData,
-        encode: { lng: 0, lat: 1 },
-        itemStyle: { color: '#ef4444', borderColor: '#ffffff', borderWidth: 1.2 },
-        emphasis: { scale: 1.6 },
+        symbolSize: 1.8,
+        large: true,
+        largeThreshold: 1000,
+        progressive: 1500,
+        progressiveThreshold: 1500,
+        itemStyle: { color: '#ef4444', opacity: 0.5, borderColor: '#ffffff', borderWidth: 0 },
+        emphasis: { scale: 2 },
         label: { show: false }
       }
     ]
@@ -690,21 +703,23 @@ function mapFeatureFillColor(feature: GeoJsonFeature, alpha = 1) {
   const layerType = readText(feature.properties.layer_type)
   if (layerType !== 'area') return mapLayerColor(layerType, alpha)
   const palette: Array<[number, number, number]> = [
-    [22, 106, 91],
-    [217, 119, 6],
-    [37, 99, 235],
-    [147, 51, 234],
-    [220, 38, 38],
-    [8, 145, 178],
-    [101, 163, 13],
-    [190, 18, 60],
-    [71, 85, 105],
-    [124, 58, 237],
-    [13, 148, 136],
-    [234, 88, 12]
+    [20, 184, 166],
+    [245, 158, 11],
+    [99, 102, 241],
+    [244, 114, 182],
+    [34, 197, 94],
+    [251, 113, 133],
+    [14, 165, 233],
+    [168, 85, 247],
+    [132, 204, 22],
+    [249, 115, 22],
+    [6, 182, 212],
+    [236, 72, 153]
   ]
+  const colorIndex = readNumber(feature.properties.area_color_index)
   const key = readText(feature.properties.name) || readText(feature.properties.id)
-  const [r, g, b] = palette[Math.abs(hashText(key)) % palette.length]
+  const paletteIndex = colorIndex === null ? Math.abs(hashText(key)) : colorIndex
+  const [r, g, b] = palette[Math.abs(paletteIndex) % palette.length]
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
@@ -714,11 +729,6 @@ function hashText(value: string) {
     hash = (hash * 31 + value.charCodeAt(index)) | 0
   }
   return hash
-}
-
-function mapPointSize(value: number | null) {
-  if (value === null) return 10
-  return Math.max(8, Math.min(24, 8 + Math.abs(value) * 0.7))
 }
 
 function selectedMapProperties() {
@@ -1694,13 +1704,13 @@ watch(environmentSeriesView, () => {
       </el-form>
     </el-aside>
 
-    <el-main v-loading="loading" class="main">
+    <el-main class="main">
       <div class="topbar">
         <div>
           <h2>{{ selectedDataset?.name || '未选择数据集' }}</h2>
           <p>{{ activePage === 'data' ? '上传、查看和删除数据' : '生成知识图谱并进行智能问答' }}</p>
         </div>
-        <el-button :icon="Refresh" circle @click="refreshAll" />
+        <el-button :icon="Refresh" :loading="loading" circle @click="refreshAll" />
       </div>
 
       <template v-if="activePage === 'data'">

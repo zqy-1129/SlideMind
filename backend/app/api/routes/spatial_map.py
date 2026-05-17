@@ -39,6 +39,7 @@ async def get_map_layers(
     }
     all_bounds: list[list[float]] = []
     area_entries = await _load_area_entries(dataset_id)
+    area_color_indexes = _assign_area_color_indexes(area_entries)
 
     for category, (layer_key, category_name) in GIS_LAYER_CONFIG.items():
         query = {"dataset_id": dataset_id, "gis_category": category}
@@ -58,6 +59,7 @@ async def get_map_layers(
                 simplify,
                 admin_name,
                 sequence_by_region[sequence_key],
+                area_color_indexes.get(str(document["_id"])),
             )
             if feature is None:
                 continue
@@ -85,19 +87,59 @@ async def get_map_layers(
 
 async def _load_area_entries(dataset_id: str) -> list[dict[str, Any]]:
     entries = []
-    cursor = get_db().gis_features.find({"dataset_id": dataset_id, "gis_category": "area"})
+    cursor = get_db().gis_features.find({"dataset_id": dataset_id, "gis_category": "area"}).sort("feature_index", 1)
     async for document in cursor:
         geometry = document.get("geometry")
         if not isinstance(geometry, dict):
             continue
         entries.append(
             {
+                "id": str(document["_id"]),
                 "name": _explicit_name(document.get("properties") or {}, AREA_NAME_FIELDS) or "未知区域",
                 "geometry": geometry,
                 "bbox": document.get("bbox") or _geometry_bbox(geometry),
             }
         )
     return entries
+
+
+def _assign_area_color_indexes(area_entries: list[dict[str, Any]]) -> dict[str, int]:
+    if not area_entries:
+        return {}
+    try:
+        from shapely.geometry import shape
+
+        geometries = []
+        for entry in area_entries:
+            geometries.append(shape(entry["geometry"]))
+        neighbors: dict[int, set[int]] = {index: set() for index in range(len(area_entries))}
+        for index, geom_a in enumerate(geometries):
+            bbox_a = area_entries[index].get("bbox")
+            if not bbox_a:
+                continue
+            for other_index in range(index + 1, len(geometries)):
+                bbox_b = area_entries[other_index].get("bbox")
+                if not bbox_b or not _bbox_intersects(bbox_a, bbox_b):
+                    continue
+                geom_b = geometries[other_index]
+                if geom_a.touches(geom_b) or geom_a.intersects(geom_b):
+                    neighbors[index].add(other_index)
+                    neighbors[other_index].add(index)
+        color_indexes: dict[int, int] = {}
+        order = sorted(range(len(area_entries)), key=lambda item: len(neighbors[item]), reverse=True)
+        for index in order:
+            used = {color_indexes[neighbor] for neighbor in neighbors[index] if neighbor in color_indexes}
+            color_index = 0
+            while color_index in used:
+                color_index += 1
+            color_indexes[index] = color_index
+        return {area_entries[index]["id"]: color for index, color in color_indexes.items()}
+    except Exception:
+        return {entry["id"]: index for index, entry in enumerate(area_entries)}
+
+
+def _bbox_intersects(left: list[float], right: list[float]) -> bool:
+    return not (left[2] < right[0] or right[2] < left[0] or left[3] < right[1] or right[3] < left[1])
 
 
 def _feature_collection(features: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -111,6 +153,7 @@ def _gis_feature(
     simplify: bool,
     admin_name: str,
     sequence: int,
+    area_color_index: int | None = None,
 ) -> dict[str, Any] | None:
     geometry = document.get("geometry")
     if not isinstance(geometry, dict):
@@ -133,6 +176,7 @@ def _gis_feature(
             "layer_name": document.get("layer_name"),
             "centroid": document.get("centroid"),
             "bbox": document.get("bbox"),
+            "area_color_index": area_color_index,
             "attributes": _important_properties(properties),
         },
     }
@@ -145,6 +189,7 @@ def _insar_feature(record: dict[str, Any]) -> dict[str, Any] | None:
     lat = _first_number(normalized.get("latitude"), raw.get("lat"), raw.get("latitude"), raw.get("纬度"))
     if lon is None or lat is None:
         return None
+    lon, lat = _normalize_lng_lat(lon, lat)
     point_id = normalized.get("point_id") or raw.get("point_id") or raw.get("id") or record.get("row_number")
     summary = summarize_insar_raw_fields(raw)
     return {
@@ -167,6 +212,12 @@ def _insar_feature(record: dict[str, Any]) -> dict[str, Any] | None:
             "trend": summary.get("trend"),
         },
     }
+
+
+def _normalize_lng_lat(lon: float, lat: float) -> tuple[float, float]:
+    if -90 <= lon <= 90 and 90 <= lat <= 180:
+        return lat, lon
+    return lon, lat
 
 
 def _explicit_name(properties: dict[str, Any], fields: tuple[str, ...]) -> str | None:
