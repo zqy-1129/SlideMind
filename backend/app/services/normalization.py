@@ -1,5 +1,6 @@
-from datetime import datetime
 from typing import Any
+
+from app.services.environment_time_series import parse_time
 
 
 FIELD_ALIASES = {
@@ -11,7 +12,8 @@ FIELD_ALIASES = {
     "elevation": ["elevation", "height", "高程"],
     "displacement": ["displacement", "deformation", "形变", "累计形变", "位移", "累计位移"],
     "velocity": ["velocity", "rate", "形变速率", "速率"],
-    "water_level": ["water_level", "level", "库水位", "水位"],
+    "water_level": ["water_level", "level", "height(m)", "height (m)", "库水位", "水位"],
+    "rainfall": ["rainfall", "rain", "rain_sum", "rain_sum (mm)", "降雨", "降雨量", "雨量"],
     "station_name": ["station", "station_name", "站点", "水位站"],
 }
 
@@ -38,22 +40,10 @@ def normalize_record(row: dict[str, Any]) -> dict[str, Any]:
 
 def _coerce_value(target: str, value: Any) -> Any:
     if target == "timestamp":
-        return _parse_datetime(value)
-    if target in {"longitude", "latitude", "elevation", "displacement", "velocity", "water_level"}:
+        return parse_time(value) or str(value).strip()
+    if target in {"longitude", "latitude", "elevation", "displacement", "velocity", "water_level", "rainfall"}:
         try:
             return float(value)
         except (TypeError, ValueError):
             return value
     return str(value).strip()
-
-
-def _parse_datetime(value: Any) -> datetime | str:
-    if isinstance(value, datetime):
-        return value
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(str(value).strip(), fmt)
-        except ValueError:
-            continue
-    return str(value).strip()
-

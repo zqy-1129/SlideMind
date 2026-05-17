@@ -20,6 +20,7 @@ import {
   type Dataset,
   type DocumentChunk,
   type DocumentItem,
+  type EnvironmentTimeSeries,
   type GisFeature,
   type GraphEdge,
   type GraphNode,
@@ -32,6 +33,7 @@ import {
 type AppPage = 'data' | 'analysis'
 type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
 type NodeDetailMode = 'formatted' | 'raw'
+type EnvironmentDataType = 'rainfall' | 'water_level'
 
 interface NodeDetailItem {
   label: string
@@ -70,8 +72,10 @@ const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
 const insarSeriesCanvas = ref<HTMLDivElement | null>(null)
+const environmentSeriesCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
 let insarSeriesChart: echarts.ECharts | null = null
+let environmentSeriesChart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
 const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
@@ -87,6 +91,10 @@ const nodeDetailMode = ref<NodeDetailMode>('formatted')
 const insarSeriesVisible = ref(false)
 const insarSeriesLoading = ref(false)
 const selectedInsarSeries = ref<InsarTimeSeries | null>(null)
+const environmentSeriesVisible = ref(false)
+const environmentSeriesLoading = ref(false)
+const environmentSeriesView = ref<'chart' | 'table'>('chart')
+const selectedEnvironmentSeries = ref<EnvironmentTimeSeries | null>(null)
 const question = ref('')
 const answer = ref<Answer | null>(null)
 const loading = ref(false)
@@ -649,6 +657,12 @@ function readableNodeType(entityType: string, gisCategory: string, sourceKind: s
   if (sourceKind === 'text_entity') return '文本知识实体'
   if (sourceKind === 'document') return '文本文档'
   if (sourceKind === 'document_chunk') return '文本切片'
+  if (sourceKind === 'environment_collection') return '环境时序集合'
+  if (sourceKind === 'environment_series') {
+    if (entityType.includes('降雨')) return '降雨时序'
+    if (entityType.includes('库水位') || entityType.includes('水位')) return '库水位时序'
+    return '环境时序'
+  }
   if (sourceKind === 'insar' || entityType.includes('InSAR')) return 'InSAR监测点'
   if (entityType.includes('集合')) return `${entityType.replace('_', '')}`
   return readableGisCategory(gisCategory || entityType) || entityType || '图谱节点'
@@ -810,6 +824,10 @@ function importantAttributeItems(attributes: Record<string, unknown>) {
     'start_date',
     'end_date',
     'latest_value',
+    'max_value',
+    'min_value',
+    'average_value',
+    'cumulative_value',
     'max_settlement',
     'max_uplift',
     'cumulative_change',
@@ -817,6 +835,8 @@ function importantAttributeItems(attributes: Record<string, unknown>) {
     'trend',
     'text_fact_count',
     'rainfall',
+    'data_type',
+    'unit',
     'elevation',
     'water_level',
     'time',
@@ -846,7 +866,11 @@ function attributeLabel(key: string) {
     observation_count: '观测次数',
     start_date: '起始日期',
     end_date: '最新日期',
-    latest_value: '最新累计形变',
+    latest_value: '最新值',
+    max_value: '最大值',
+    min_value: '最小值',
+    average_value: '平均值',
+    cumulative_value: '累计值',
     max_settlement: '最大沉降',
     max_uplift: '最大抬升',
     cumulative_change: '累计变化',
@@ -854,6 +878,8 @@ function attributeLabel(key: string) {
     trend: '趋势',
     text_fact_count: '文本事实数',
     rainfall: '降雨量',
+    data_type: '数据类型',
+    unit: '单位',
     elevation: '高程',
     water_level: '水位',
     time: '时间',
@@ -964,6 +990,122 @@ function renderInsarSeriesChart() {
 function closeInsarSeries() {
   insarSeriesChart?.dispose()
   insarSeriesChart = null
+}
+
+async function openEnvironmentSeries(dataType?: EnvironmentDataType) {
+  if (!selectedDatasetId.value) return
+  const resolvedType = dataType || environmentTypeFromNode(selectedGraphNode.value)
+  if (!resolvedType) {
+    ElMessage.warning('当前节点不是降雨或库水位时序')
+    return
+  }
+  environmentSeriesVisible.value = true
+  environmentSeriesLoading.value = true
+  environmentSeriesView.value = 'chart'
+  selectedEnvironmentSeries.value = null
+  try {
+    selectedEnvironmentSeries.value = await api.getEnvironmentTimeSeries(selectedDatasetId.value, resolvedType)
+    await nextTick()
+    renderEnvironmentSeriesChart()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '未找到环境时序数据')
+  } finally {
+    environmentSeriesLoading.value = false
+  }
+}
+
+function environmentTypeFromNode(node: GraphNode | null): EnvironmentDataType | null {
+  if (!node) return null
+  const properties = node.properties || {}
+  const dataType = readText(properties.data_type)
+  if (dataType === 'rainfall' || dataType === 'water_level') return dataType
+  const entityType = readText(properties.entity_type) || node.type
+  if (entityType.includes('降雨')) return 'rainfall'
+  if (entityType.includes('库水位') || entityType.includes('水位')) return 'water_level'
+  return null
+}
+
+function isEnvironmentSeriesNode(node: GraphNode | null) {
+  if (!node) return false
+  return readText(node.properties?.source_kind) === 'environment_series' || Boolean(environmentTypeFromNode(node))
+}
+
+function environmentSeriesTitle(series: EnvironmentTimeSeries | null) {
+  if (!series) return '环境时序'
+  return series.data_type === 'rainfall' ? '降雨时序' : '库水位时序'
+}
+
+function renderEnvironmentSeriesChart() {
+  if (!environmentSeriesCanvas.value || !selectedEnvironmentSeries.value) return
+  const series = selectedEnvironmentSeries.value
+  const observations = series.observations || []
+  const xAxis = observations.map((item) => item.date || item.datetime || '')
+  environmentSeriesChart ||= echarts.init(environmentSeriesCanvas.value)
+  environmentSeriesChart.clear()
+  environmentSeriesChart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: {
+      top: 0,
+      data: series.data_type === 'rainfall' ? ['降雨量', '累计降雨'] : ['库水位', '变化率']
+    },
+    grid: { top: 48, left: 56, right: 64, bottom: 72 },
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0 },
+      { type: 'slider', xAxisIndex: 0, height: 22, bottom: 24 }
+    ],
+    xAxis: { type: 'category', data: xAxis, boundaryGap: series.data_type === 'rainfall' },
+    yAxis: [
+      { type: 'value', name: series.data_type === 'rainfall' ? '降雨量' : '库水位', scale: true },
+      { type: 'value', name: series.data_type === 'rainfall' ? '累计降雨' : '变化率/天', scale: true }
+    ],
+    series:
+      series.data_type === 'rainfall'
+        ? [
+            {
+              name: '降雨量',
+              type: 'bar',
+              data: observations.map((item) => item.value),
+              itemStyle: { color: '#2563eb' }
+            },
+            {
+              name: '累计降雨',
+              type: 'line',
+              yAxisIndex: 1,
+              smooth: true,
+              showSymbol: false,
+              data: observations.map((item) => item.cumulative),
+              lineStyle: { width: 2, color: '#16a34a' },
+              itemStyle: { color: '#16a34a' }
+            }
+          ]
+        : [
+            {
+              name: '库水位',
+              type: 'line',
+              smooth: true,
+              showSymbol: false,
+              data: observations.map((item) => item.value),
+              lineStyle: { width: 2, color: '#0891b2' },
+              itemStyle: { color: '#0891b2' }
+            },
+            {
+              name: '变化率',
+              type: 'line',
+              yAxisIndex: 1,
+              smooth: true,
+              showSymbol: false,
+              data: observations.map((item) => item.rate),
+              lineStyle: { width: 2, color: '#dc2626' },
+              itemStyle: { color: '#dc2626' }
+            }
+          ]
+  })
+  environmentSeriesChart.resize()
+}
+
+function closeEnvironmentSeries() {
+  environmentSeriesChart?.dispose()
+  environmentSeriesChart = null
 }
 
 function mergeGraph(nextGraph: { nodes: GraphNode[]; edges: GraphEdge[] }) {
@@ -1140,8 +1282,12 @@ onBeforeUnmount(() => {
   clearGraphPolling()
   chart?.dispose()
   insarSeriesChart?.dispose()
+  environmentSeriesChart?.dispose()
 })
 watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
+watch(environmentSeriesView, () => {
+  if (environmentSeriesView.value === 'chart') nextTick(renderEnvironmentSeriesChart)
+})
 </script>
 
 <template>
@@ -1321,6 +1467,11 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                   <el-button size="small" type="primary" @click="openInsarSeries(row)">曲线</el-button>
                 </template>
               </el-table-column>
+              <el-table-column v-if="dataView === 'water_level' || dataView === 'rainfall'" label="时序查看" width="110" fixed="right">
+                <template #default>
+                  <el-button size="small" type="primary" @click="openEnvironmentSeries(dataView as EnvironmentDataType)">查看</el-button>
+                </template>
+              </el-table-column>
               <el-table-column label="原始字段" width="110" fixed="right">
                 <template #default="{ row }">
                   <el-popover placement="left" width="520" trigger="click">
@@ -1486,14 +1637,19 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
                     <h3>{{ formattedGraphNodeDetail?.title || selectedGraphNode.label }}</h3>
                     <el-tag>{{ formattedGraphNodeDetail?.typeLabel || selectedGraphNode.type }}</el-tag>
                   </div>
-                  <el-segmented
-                    v-model="nodeDetailMode"
-                    size="small"
-                    :options="[
-                      { label: '格式化', value: 'formatted' },
-                      { label: '原始数据', value: 'raw' }
-                    ]"
-                  />
+                  <div class="node-detail-actions">
+                    <el-button v-if="isEnvironmentSeriesNode(selectedGraphNode)" size="small" type="primary" @click="openEnvironmentSeries()">
+                      查看时序
+                    </el-button>
+                    <el-segmented
+                      v-model="nodeDetailMode"
+                      size="small"
+                      :options="[
+                        { label: '格式化', value: 'formatted' },
+                        { label: '原始数据', value: 'raw' }
+                      ]"
+                    />
+                  </div>
                 </div>
                 <template v-if="nodeDetailMode === 'formatted' && formattedGraphNodeDetail">
                   <section v-for="section in formattedGraphNodeDetail.sections" :key="section.title" class="detail-section">
@@ -1573,6 +1729,60 @@ watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
             </div>
           </div>
           <div ref="insarSeriesCanvas" class="insar-series-chart" />
+        </div>
+      </el-dialog>
+
+      <el-dialog
+        v-model="environmentSeriesVisible"
+        :title="environmentSeriesTitle(selectedEnvironmentSeries)"
+        width="1040px"
+        destroy-on-close
+        @closed="closeEnvironmentSeries"
+        @opened="renderEnvironmentSeriesChart"
+      >
+        <div v-loading="environmentSeriesLoading" class="environment-series-dialog">
+          <div v-if="selectedEnvironmentSeries" class="insar-series-summary">
+            <div>
+              <span>名称</span>
+              <strong>{{ selectedEnvironmentSeries.name || '-' }}</strong>
+            </div>
+            <div>
+              <span>观测期</span>
+              <strong>{{ selectedEnvironmentSeries.start_date || '-' }} 至 {{ selectedEnvironmentSeries.end_date || '-' }}</strong>
+            </div>
+            <div>
+              <span>观测次数</span>
+              <strong>{{ selectedEnvironmentSeries.observation_count || 0 }}</strong>
+            </div>
+            <div>
+              <span>最新值</span>
+              <strong>{{ formatValue(selectedEnvironmentSeries.latest_value) }}</strong>
+            </div>
+            <div>
+              <span>最大/最小</span>
+              <strong>{{ formatValue(selectedEnvironmentSeries.max_value) }} / {{ formatValue(selectedEnvironmentSeries.min_value) }}</strong>
+            </div>
+            <div>
+              <span>趋势</span>
+              <strong>{{ selectedEnvironmentSeries.trend || '-' }}</strong>
+            </div>
+          </div>
+          <el-tabs v-model="environmentSeriesView" class="environment-series-tabs">
+            <el-tab-pane label="曲线" name="chart">
+              <div ref="environmentSeriesCanvas" class="insar-series-chart" />
+            </el-tab-pane>
+            <el-tab-pane label="表格" name="table">
+              <el-table :data="selectedEnvironmentSeries?.observations || []" height="460" size="small" border>
+                <el-table-column prop="datetime" label="时间" min-width="170">
+                  <template #default="{ row }">{{ row.datetime || row.date }}</template>
+                </el-table-column>
+                <el-table-column prop="value" label="原始值" width="120" />
+                <el-table-column prop="delta" label="相邻变化量" width="130" />
+                <el-table-column prop="rate" label="变化率/天" width="120" />
+                <el-table-column prop="cumulative" label="累计值" width="120" />
+              </el-table>
+            </el-tab-pane>
+          </el-tabs>
         </div>
       </el-dialog>
     </el-main>

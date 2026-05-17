@@ -6,6 +6,7 @@ from bson import ObjectId
 from app.db.milvus import get_collection
 from app.db.mongo import get_db
 from app.services.embedding import embed_text
+from app.services.environment_time_series import build_environment_time_series_document
 from app.services.insar_time_series import build_insar_time_series_document
 from app.services.normalization import normalize_record
 from app.services.parsers import (
@@ -63,6 +64,7 @@ async def _ingest_table(task: dict, file_doc: dict) -> int:
     source_file_id = str(file_doc["_id"])
     await get_db().tabular_records.delete_many({"source_file_id": source_file_id})
     await get_db().insar_time_series.delete_many({"source_file_id": source_file_id})
+    await get_db().environment_time_series.delete_many({"source_file_id": source_file_id})
     rows = parse_table(file_doc["path"])
     documents = []
     for index, row in enumerate(rows, start=1):
@@ -94,6 +96,26 @@ async def _ingest_table(task: dict, file_doc: dict) -> int:
         series_documents = [document for record in documents if (document := build_insar_time_series_document(record))]
         if series_documents:
             await get_db().insar_time_series.insert_many(series_documents)
+    if task["data_type"] in {"rainfall", "water_level"}:
+        dataset = await get_db().datasets.find_one({"_id": ObjectId(task["dataset_id"])})
+        await get_db().environment_time_series.delete_many(
+            {"dataset_id": task["dataset_id"], "data_type": task["data_type"]}
+        )
+        all_environment_records = [
+            record
+            async for record in get_db()
+            .tabular_records.find({"dataset_id": task["dataset_id"], "data_type": task["data_type"]})
+            .sort("timestamp", 1)
+        ]
+        series_document = build_environment_time_series_document(
+            task["dataset_id"],
+            dataset.get("name") if dataset else task["dataset_id"],
+            source_file_id if len({record.get("source_file_id") for record in all_environment_records}) <= 1 else "multiple",
+            task["data_type"],
+            all_environment_records,
+        )
+        if series_document:
+            await get_db().environment_time_series.insert_one(series_document)
     return len(documents)
 
 

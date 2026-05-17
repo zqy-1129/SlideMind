@@ -144,6 +144,33 @@ export interface InsarTimeSeries {
   observations: InsarObservation[]
 }
 
+export interface EnvironmentObservation {
+  date: string
+  datetime?: string
+  value: number
+  delta: number
+  rate: number
+  cumulative: number
+}
+
+export interface EnvironmentTimeSeries {
+  id: string
+  dataset_id: string
+  source_file_id?: string
+  data_type: 'rainfall' | 'water_level'
+  name: string
+  start_date?: string
+  end_date?: string
+  observation_count: number
+  latest_value?: number
+  max_value?: number
+  min_value?: number
+  average_value?: number
+  cumulative_value?: number
+  trend?: string
+  observations: EnvironmentObservation[]
+}
+
 const API_BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -214,6 +241,8 @@ export const api = {
   },
   getInsarTimeSeries: (recordId: string) =>
     request<InsarTimeSeries>(`/insar/time-series?record_id=${recordId}`),
+  getEnvironmentTimeSeries: (datasetId: string, dataType: 'rainfall' | 'water_level') =>
+    request<EnvironmentTimeSeries>(`/environment/time-series?dataset_id=${datasetId}&data_type=${dataType}`),
   buildGraph: (datasetId: string, includeTextKg = true) =>
     request<GraphBuildTask>('/graph/build', {
       method: 'POST',

@@ -33,6 +33,7 @@ async def ensure_indexes() -> None:
     await database.tabular_records.create_index([("dataset_id", 1), ("data_type", 1), ("timestamp", 1)])
     await database.insar_time_series.create_index([("dataset_id", 1), ("source_record_id", 1)], unique=True)
     await database.insar_time_series.create_index([("dataset_id", 1), ("point_id", 1)])
+    await database.environment_time_series.create_index([("dataset_id", 1), ("data_type", 1), ("source_file_id", 1)])
     await database.documents.create_index("dataset_id")
     await database.document_chunks.create_index([("dataset_id", 1), ("source_file_id", 1)])
     await database.text_kg_tuples.create_index([("dataset_id", 1), ("chunk_id", 1)])

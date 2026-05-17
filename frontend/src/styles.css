@@ -334,6 +334,14 @@ body {
   flex: 0 0 auto;
 }
 
+.node-detail-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .node-detail .json-preview {
   margin-top: 12px;
 }
@@ -412,6 +420,14 @@ body {
   border-radius: 6px;
 }
 
+.environment-series-dialog {
+  min-height: 540px;
+}
+
+.environment-series-tabs {
+  margin-top: 12px;
+}
+
 @media (max-width: 980px) {
   .layout {
     display: block;
@@ -460,6 +476,11 @@ body {
 
   .node-detail-head {
     flex-direction: column;
+  }
+
+  .node-detail-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .node-detail-head .el-segmented {

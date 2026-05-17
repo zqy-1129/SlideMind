@@ -4,6 +4,7 @@ from bson import ObjectId
 from fastapi import APIRouter, HTTPException
 
 from app.db.mongo import get_db
+from app.services.environment_time_series import build_environment_time_series_document
 from app.services.insar_time_series import build_insar_time_series_document
 from app.services.deletion import delete_dataset_data
 from app.utils.ids import stringify_id
@@ -95,6 +96,38 @@ async def get_insar_time_series(record_id: str) -> dict[str, Any]:
         document = build_insar_time_series_document(record) if record else None
     if document is None:
         raise HTTPException(status_code=404, detail="InSAR time series not found")
+    document.setdefault("_id", ObjectId())
+    return stringify_id(document)
+
+
+@router.get("/environment/time-series")
+async def get_environment_time_series(dataset_id: str, data_type: str) -> dict[str, Any]:
+    if not ObjectId.is_valid(dataset_id):
+        raise HTTPException(status_code=400, detail="Invalid dataset_id")
+    if data_type not in {"rainfall", "water_level"}:
+        raise HTTPException(status_code=400, detail="Unsupported environment data_type")
+
+    document = await get_db().environment_time_series.find_one(
+        {"dataset_id": dataset_id, "data_type": data_type},
+        sort=[("updated_at", -1), ("created_at", -1)],
+    )
+    if document is None:
+        dataset = await get_db().datasets.find_one({"_id": ObjectId(dataset_id)})
+        records = [
+            record
+            async for record in get_db()
+            .tabular_records.find({"dataset_id": dataset_id, "data_type": data_type})
+            .sort("timestamp", 1)
+        ]
+        document = build_environment_time_series_document(
+            dataset_id,
+            dataset.get("name") if dataset else dataset_id,
+            records[0].get("source_file_id") if records else "legacy",
+            data_type,
+            records,
+        )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Environment time series not found")
     document.setdefault("_id", ObjectId())
     return stringify_id(document)
 

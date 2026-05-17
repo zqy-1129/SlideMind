@@ -10,6 +10,7 @@ from bson import ObjectId
 from neo4j import Driver
 
 from app.db.mongo import get_db
+from app.services.environment_time_series import build_environment_time_series_document
 from app.services.insar_time_series import strip_insar_time_fields, summarize_insar_raw_fields
 
 ProgressLogger = Callable[[str, int], Awaitable[None]]
@@ -44,6 +45,7 @@ async def build_spatial_kg_from_mongo(dataset_id: str, log: ProgressLogger | Non
         async for document in get_db()
         .tabular_records.find({"dataset_id": dataset_id, "data_type": "insar"}).sort("row_number", 1)
     ]
+    environment_series = await _load_environment_series(dataset_id, dataset.get("name") if dataset else dataset_id)
 
     await _log(log, f"读取完成：GIS 要素 {len(gis_docs)} 个，InSAR 记录 {len(insar_records)} 条", 12)
     kg = _build_base_space_kg(dataset_id, gis_docs, dataset.get("name") if dataset else dataset_id)
@@ -51,6 +53,9 @@ async def build_spatial_kg_from_mongo(dataset_id: str, log: ProgressLogger | Non
 
     kg = _add_anchors_to_kg(kg)
     await _log(log, "实体空间锚点计算完成", 45)
+
+    _attach_environment_series(dataset_id, kg, environment_series)
+    await _log(log, f"环境时序摘要接入完成：{len(environment_series)} 条", 50)
 
     insar_entities = _records_to_insar_entities(dataset_id, insar_records)
     _attach_insar_collections(dataset_id, kg, insar_entities)
@@ -195,6 +200,96 @@ def _gis_document_to_entity(dataset_id: str, document: dict[str, Any]) -> dict[s
         "source_kind": "gis",
         "gis_category": category,
     }
+
+
+async def _load_environment_series(dataset_id: str, dataset_name: str) -> list[dict[str, Any]]:
+    documents = [
+        document
+        async for document in get_db()
+        .environment_time_series.find({"dataset_id": dataset_id})
+        .sort([("data_type", 1), ("start_date", 1)])
+    ]
+    existing_types = {document.get("data_type") for document in documents}
+    missing_types = {"rainfall", "water_level"} - existing_types
+    if not missing_types:
+        return documents
+
+    for data_type in sorted(missing_types):
+        records = [
+            record
+            async for record in get_db()
+            .tabular_records.find({"dataset_id": dataset_id, "data_type": data_type})
+            .sort("timestamp", 1)
+        ]
+        fallback = build_environment_time_series_document(
+            dataset_id,
+            dataset_name,
+            records[0].get("source_file_id") if records else "legacy",
+            data_type,
+            records,
+        )
+        if fallback:
+            fallback["_id"] = ObjectId()
+            documents.append(fallback)
+    return documents
+
+
+def _attach_environment_series(dataset_id: str, kg: dict[str, Any], series_documents: list[dict[str, Any]]) -> None:
+    if not series_documents:
+        return
+
+    collection_id = _make_id("environment-series-collection", dataset_id)
+    kg["entities"].append(
+        {
+            "__id__": collection_id,
+            "__created_at__": _timestamp(),
+            "entity_name": "环境时序集合",
+            "type": "环境时序集合",
+            "geom_type": "Collection",
+            "geometry": None,
+            "attributes": {"total_count": len(series_documents), "category_type": "环境时序"},
+            "dataset_id": dataset_id,
+            "source_kind": "environment_collection",
+        }
+    )
+    kg["relations"].append(_relation(f"dataset:{dataset_id}", collection_id, "包含", "数据集-环境时序集合关系"))
+
+    for document in series_documents:
+        data_type = document.get("data_type")
+        entity_type = "降雨时序" if data_type == "rainfall" else "库水位时序"
+        unit = "mm" if data_type == "rainfall" else "m"
+        attributes = {
+            "data_type": data_type,
+            "unit": unit,
+            "mongo_series_id": str(document.get("_id")),
+            "start_date": document.get("start_date"),
+            "end_date": document.get("end_date"),
+            "observation_count": document.get("observation_count"),
+            "latest_value": document.get("latest_value"),
+            "max_value": document.get("max_value"),
+            "min_value": document.get("min_value"),
+            "average_value": document.get("average_value"),
+            "cumulative_value": document.get("cumulative_value"),
+            "trend": document.get("trend"),
+        }
+        entity_id = _make_id("environment-series", dataset_id, str(document.get("_id")))
+        kg["entities"].append(
+            {
+                "__id__": entity_id,
+                "__created_at__": _timestamp(),
+                "entity_name": document.get("name") or f"{kg.get('meta', {}).get('dataset_name', dataset_id)}_{entity_type}",
+                "type": entity_type,
+                "geom_type": "TimeSeries",
+                "geometry": None,
+                "attributes": attributes,
+                "dataset_id": dataset_id,
+                "mongo_id": str(document.get("_id")),
+                "source_file_id": document.get("source_file_id"),
+                "source_kind": "environment_series",
+                "data_type": data_type,
+            }
+        )
+        kg["relations"].append(_relation(collection_id, entity_id, "包含", "环境时序集合-时序关系"))
 
 
 def _attach_insar_collections(dataset_id: str, kg: dict[str, Any], insar_entities: list[dict[str, Any]]) -> None:
@@ -548,6 +643,9 @@ def _entity_props(dataset_id: str, entity: dict[str, Any]) -> dict[str, Any]:
             "source_file_id": entity.get("source_file_id"),
             "source_file": entity.get("source_file"),
             "source_kind": entity.get("source_kind"),
+            "data_type": entity.get("data_type") or (attributes.get("data_type") if isinstance(attributes, dict) else None),
+            "unit": attributes.get("unit") if isinstance(attributes, dict) else None,
+            "mongo_series_id": attributes.get("mongo_series_id") if isinstance(attributes, dict) else None,
             "gis_category": entity.get("gis_category"),
             "admin_belong": entity.get("admin_belong"),
             "region_id": region_id,
@@ -560,6 +658,10 @@ def _entity_props(dataset_id: str, entity: dict[str, Any]) -> dict[str, Any]:
             "end_date": attributes.get("end_date") if isinstance(attributes, dict) else None,
             "observation_count": attributes.get("observation_count") if isinstance(attributes, dict) else None,
             "latest_value": attributes.get("latest_value") if isinstance(attributes, dict) else None,
+            "max_value": attributes.get("max_value") if isinstance(attributes, dict) else None,
+            "min_value": attributes.get("min_value") if isinstance(attributes, dict) else None,
+            "average_value": attributes.get("average_value") if isinstance(attributes, dict) else None,
+            "cumulative_value": attributes.get("cumulative_value") if isinstance(attributes, dict) else None,
             "max_settlement": attributes.get("max_settlement") if isinstance(attributes, dict) else None,
             "average_rate": attributes.get("average_rate") if isinstance(attributes, dict) else None,
             "trend": attributes.get("trend") if isinstance(attributes, dict) else None,
@@ -624,6 +726,10 @@ def _neo4j_label(entity: dict[str, Any]) -> str:
         return "Document"
     if source_kind == "document_chunk":
         return "DocumentChunk"
+    if source_kind == "environment_collection":
+        return "EnvironmentCollection"
+    if source_kind == "environment_series":
+        return "RainfallSeries" if entity.get("data_type") == "rainfall" else "WaterLevelSeries"
     if source_kind == "gis_collection" or "集合" in entity_type:
         return "GISCollection"
     if category in GIS_CATEGORY_TYPES:

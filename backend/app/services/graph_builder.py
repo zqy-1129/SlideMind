@@ -96,7 +96,9 @@ def _read_graph_roots(driver: Driver, dataset_id: str, limit: int) -> dict[str, 
     query = """
     MATCH (d:DatasetGraph {dataset_id: $dataset_id})
     OPTIONAL MATCH (d)-[r:HAS_ENTITY|HAS_TEXT_KNOWLEDGE]->(child)
-    WHERE child:Area OR (child.source_kind = 'text_collection' AND child.region_id = d.id)
+    WHERE child:Area
+       OR child.source_kind = 'environment_collection'
+       OR (child.source_kind = 'text_collection' AND child.region_id = d.id)
     RETURN d, r, child
     ORDER BY CASE WHEN child:Area THEN 0 ELSE 9 END, coalesce(child.name, '')
     LIMIT $limit
@@ -130,8 +132,9 @@ def _read_graph_children(driver: Driver, dataset_id: str | None, parent_id: str,
     dataset_child_filter = "AND other.dataset_id = $dataset_id" if dataset_id else ""
     root_query = f"""
     MATCH (parent:DatasetGraph {{id: $parent_id}})
-    OPTIONAL MATCH (parent)-[r:HAS_ENTITY]->(child:Area)
-    WHERE child IS NULL OR true {dataset_filter}
+    OPTIONAL MATCH (parent)-[r:HAS_ENTITY]->(child)
+    WHERE child IS NULL OR (true {dataset_filter}
+      AND (child:Area OR child.source_kind = 'environment_collection'))
     RETURN parent, r, child
     ORDER BY coalesce(child.name, '')
     LIMIT $limit

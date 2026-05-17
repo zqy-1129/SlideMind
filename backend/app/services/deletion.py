@@ -22,6 +22,7 @@ async def delete_dataset_cascade(dataset_id: str) -> dict[str, Any]:
         "import_tasks": (await database.import_tasks.delete_many({"dataset_id": dataset_id})).deleted_count,
         "tabular_records": (await database.tabular_records.delete_many({"dataset_id": dataset_id})).deleted_count,
         "insar_time_series": (await database.insar_time_series.delete_many({"dataset_id": dataset_id})).deleted_count,
+        "environment_time_series": (await database.environment_time_series.delete_many({"dataset_id": dataset_id})).deleted_count,
         "documents": (await database.documents.delete_many({"dataset_id": dataset_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"dataset_id": dataset_id})).deleted_count,
         "text_kg_tuples": (await database.text_kg_tuples.delete_many({"dataset_id": dataset_id})).deleted_count,
@@ -63,6 +64,16 @@ async def delete_import_cascade(task_id: str) -> dict[str, Any]:
         "uploaded_files": (await database.uploaded_files.delete_one({"_id": ObjectId(file_id)})).deleted_count,
         "tabular_records": (await database.tabular_records.delete_many({"source_file_id": file_id})).deleted_count,
         "insar_time_series": (await database.insar_time_series.delete_many({"source_file_id": file_id})).deleted_count,
+        "environment_time_series": (
+            await database.environment_time_series.delete_many(
+                {
+                    "$or": [
+                        {"source_file_id": file_id},
+                        {"dataset_id": task.get("dataset_id"), "data_type": task.get("data_type")},
+                    ]
+                }
+            )
+        ).deleted_count,
         "documents": (await database.documents.delete_many({"source_file_id": file_id})).deleted_count,
         "document_chunks": (await database.document_chunks.delete_many({"source_file_id": file_id})).deleted_count,
         "text_kg_tuples": (await database.text_kg_tuples.delete_many({"source_file_id": file_id})).deleted_count,
@@ -89,6 +100,11 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
         file_ids = [str(document["_id"]) for document in files]
         result = await database.tabular_records.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
         series = await database.insar_time_series.delete_many({"dataset_id": dataset_id}) if data_kind == "insar" else None
+        environment_series = (
+            await database.environment_time_series.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
+            if data_kind in {"water_level", "rainfall"}
+            else None
+        )
         tasks = await database.import_tasks.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
         uploaded = await database.uploaded_files.delete_many({"dataset_id": dataset_id, "data_type": data_kind})
         removed_files = _remove_files(files)
@@ -100,6 +116,7 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
             "counts": {
                 "tabular_records": result.deleted_count,
                 "insar_time_series": series.deleted_count if series else 0,
+                "environment_time_series": environment_series.deleted_count if environment_series else 0,
                 "import_tasks": tasks.deleted_count,
                 "uploaded_files": uploaded.deleted_count,
             },
