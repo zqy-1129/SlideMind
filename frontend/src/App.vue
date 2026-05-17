@@ -22,16 +22,18 @@ import {
   type DocumentItem,
   type EnvironmentTimeSeries,
   type GisFeature,
+  type GeoJsonFeature,
   type GraphEdge,
   type GraphNode,
   type GraphTask,
   type InsarTimeSeries,
   type ImportTask,
+  type MapLayers,
   type TabularRecord
 } from './api/client'
 
 type AppPage = 'data' | 'analysis'
-type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
+type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'map' | 'documents' | 'chunks'
 type NodeDetailMode = 'formatted' | 'raw'
 type EnvironmentDataType = 'rainfall' | 'water_level'
 
@@ -71,9 +73,11 @@ const uploadRef = ref<UploadInstance>()
 const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
+const mapCanvas = ref<HTMLDivElement | null>(null)
 const insarSeriesCanvas = ref<HTMLDivElement | null>(null)
 const environmentSeriesCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
+let mapChart: echarts.ECharts | null = null
 let insarSeriesChart: echarts.ECharts | null = null
 let environmentSeriesChart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
@@ -87,6 +91,16 @@ const expandedGraphNodeIds = ref<Set<string>>(new Set())
 const loadedGraphNodeIds = ref<Set<string>>(new Set())
 const loadingGraphNodeIds = ref<Set<string>>(new Set())
 const selectedGraphNode = ref<GraphNode | null>(null)
+const mapLayers = ref<MapLayers | null>(null)
+const selectedMapFeature = ref<GeoJsonFeature | null>(null)
+const mapLayerVisible = ref({
+  areas: true,
+  waters: true,
+  traffics: true,
+  buildings: true,
+  insar_points: true
+})
+const mapLoading = ref(false)
 const nodeDetailMode = ref<NodeDetailMode>('formatted')
 const insarSeriesVisible = ref(false)
 const insarSeriesLoading = ref(false)
@@ -103,6 +117,7 @@ const dataLoading = ref(false)
 const selectedDataset = computed(() => datasets.value.find((item) => item.id === selectedDatasetId.value))
 const isRecordView = computed(() => ['insar', 'water_level', 'rainfall'].includes(dataView.value))
 const isGisView = computed(() => dataView.value === 'gis_vector')
+const canDeleteCurrentData = computed(() => dataView.value !== 'map')
 const graphBuilding = computed(() => graphTask.value?.status === 'queued' || graphTask.value?.status === 'running')
 const graphTaskLastLog = computed(() => graphTask.value?.logs?.at(-1) || '')
 const graphTypeColors = [
@@ -124,6 +139,7 @@ const dataViewLabel = computed(() => {
     water_level: '库水位数据',
     rainfall: '降雨数据',
     gis_vector: 'GIS矢量数据',
+    map: '空间地图',
     documents: '文本资料',
     chunks: '文本切片'
   }
@@ -212,6 +228,8 @@ async function refreshDatasetScope() {
     chunks.value = []
     graphNodes.value = []
     graphEdges.value = []
+    mapLayers.value = null
+    selectedMapFeature.value = null
     return
   }
   await Promise.all([refreshImports(), refreshDataContent(), refreshGraph()])
@@ -338,6 +356,10 @@ async function deleteCurrentData() {
     ElMessage.warning('请先选择数据集')
     return
   }
+  if (!canDeleteCurrentData.value) {
+    ElMessage.warning('空间地图是展示视图，请切换到具体数据类型后删除')
+    return
+  }
   await ElMessageBox.confirm(`确定删除当前数据集下的“${dataViewLabel.value}”吗？`, '删除数据', {
     type: 'warning',
     confirmButtonText: '删除',
@@ -384,6 +406,17 @@ async function refreshDataContent() {
       return
     }
 
+    if (dataView.value === 'map') {
+      await refreshMapLayers()
+      records.value = []
+      gisFeatures.value = []
+      recordTotal.value = 0
+      gisTotal.value = 0
+      documents.value = []
+      chunks.value = []
+      return
+    }
+
     records.value = []
     gisFeatures.value = []
     recordTotal.value = 0
@@ -417,6 +450,226 @@ async function changeRecordPage(page: number) {
 async function changeGisPage(page: number) {
   gisPage.value = page
   await refreshDataContent()
+}
+
+async function refreshMapLayers() {
+  if (!selectedDatasetId.value) return
+  mapLoading.value = true
+  selectedMapFeature.value = null
+  try {
+    mapLayers.value = await api.getMapLayers(selectedDatasetId.value)
+    await nextTick()
+    renderSpatialMap()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '空间地图加载失败')
+  } finally {
+    mapLoading.value = false
+  }
+}
+
+function renderSpatialMap() {
+  if (!mapCanvas.value || !mapLayers.value) return
+  mapChart ||= echarts.init(mapCanvas.value)
+  mapChart.off('click')
+  const features = visibleMapFeatures()
+  const featureCollection = features.length > 0 ? { type: 'FeatureCollection', features } : fallbackMapCollection()
+  echarts.registerMap('slidemind-spatial-map', featureCollection as never)
+  const mapData = features.map((feature) => ({
+    name: readText(feature.properties.id),
+    displayName: readText(feature.properties.name),
+    value: 1,
+    feature,
+    itemStyle: {
+      areaColor: mapLayerColor(readText(feature.properties.layer_type), 0.36),
+      borderColor: mapLayerColor(readText(feature.properties.layer_type)),
+      borderWidth: feature.properties.layer_type === 'area' ? 1.4 : 1
+    },
+    emphasis: {
+      itemStyle: {
+        areaColor: mapLayerColor(readText(feature.properties.layer_type), 0.62)
+      }
+    }
+  }))
+  const insarData = mapLayerVisible.value.insar_points
+    ? (mapLayers.value.insar_points.features || [])
+        .map((feature) => {
+          const coordinates = feature.geometry?.coordinates
+          if (!Array.isArray(coordinates)) return null
+          const lon = readNumber(coordinates[0])
+          const lat = readNumber(coordinates[1])
+          if (lon === null || lat === null) return null
+          const latest = readNumber(feature.properties.latest_value)
+          const velocity = readNumber(feature.properties.velocity)
+          return {
+            name: readText(feature.properties.name),
+            value: [lon, lat, latest ?? velocity ?? 1],
+            feature,
+            symbolSize: mapPointSize(latest ?? velocity)
+          }
+        })
+        .filter((item): item is { name: string; value: number[]; feature: GeoJsonFeature; symbolSize: number } => Boolean(item))
+    : []
+
+  mapChart.clear()
+  mapChart.setOption({
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: { data?: { displayName?: string; feature?: GeoJsonFeature }; seriesName?: string; name?: string }) => {
+        const properties = params.data?.feature?.properties || {}
+        const name = params.data?.displayName || readText(properties.name) || params.name || ''
+        const type = readText(properties.layer_type_name) || params.seriesName || ''
+        const trend = readText(properties.trend)
+        return [name, type, trend ? `趋势：${trend}` : ''].filter(Boolean).join('<br/>')
+      }
+    },
+    geo: {
+      map: 'slidemind-spatial-map',
+      roam: true,
+      zoom: 1.08,
+      scaleLimit: { min: 0.5, max: 18 },
+      itemStyle: { areaColor: '#eef6f4', borderColor: '#94a3b8' },
+      emphasis: { itemStyle: { areaColor: '#dbeafe' } }
+    },
+    series: [
+      {
+        name: 'GIS要素',
+        type: 'map',
+        map: 'slidemind-spatial-map',
+        geoIndex: 0,
+        nameProperty: 'id',
+        data: mapData,
+        label: {
+          show: features.length <= 80,
+          formatter: (params: { data?: { displayName?: string } }) => params.data?.displayName || '',
+          fontSize: 10,
+          color: '#334155'
+        }
+      },
+      {
+        name: 'InSAR监测点',
+        type: 'scatter',
+        coordinateSystem: 'geo',
+        data: insarData,
+        encode: { lng: 0, lat: 1 },
+        itemStyle: { color: '#ef4444', borderColor: '#ffffff', borderWidth: 1.2 },
+        emphasis: { scale: 1.6 },
+        label: { show: false }
+      }
+    ]
+  })
+  mapChart.on('click', (params: unknown) => {
+    const data = asRecord((params as { data?: unknown }).data)
+    const feature = data?.feature as GeoJsonFeature | undefined
+    if (feature) selectedMapFeature.value = feature
+  })
+  mapChart.resize()
+}
+
+function visibleMapFeatures() {
+  if (!mapLayers.value) return []
+  const result: GeoJsonFeature[] = []
+  if (mapLayerVisible.value.areas) result.push(...(mapLayers.value.areas.features || []))
+  if (mapLayerVisible.value.waters) result.push(...(mapLayers.value.waters.features || []))
+  if (mapLayerVisible.value.traffics) result.push(...(mapLayers.value.traffics.features || []))
+  if (mapLayerVisible.value.buildings) result.push(...(mapLayers.value.buildings.features || []))
+  return result
+}
+
+function fallbackMapCollection() {
+  const bounds = mapLayers.value?.bounds || [110, 30, 111, 31]
+  const [minLon, minLat, maxLon, maxLat] = bounds
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: { id: 'fallback-map-area', name: '空间范围' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [minLon, minLat],
+            [maxLon, minLat],
+            [maxLon, maxLat],
+            [minLon, maxLat],
+            [minLon, minLat]
+          ]]
+        }
+      }
+    ]
+  }
+}
+
+function mapLayerColor(layerType: string, alpha = 1) {
+  const colors: Record<string, [number, number, number]> = {
+    area: [22, 106, 91],
+    water: [37, 99, 235],
+    traffic: [217, 119, 6],
+    build: [147, 51, 234],
+    insar: [239, 68, 68]
+  }
+  const [r, g, b] = colors[layerType] || [71, 85, 105]
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function mapPointSize(value: number | null) {
+  if (value === null) return 10
+  return Math.max(8, Math.min(24, 8 + Math.abs(value) * 0.7))
+}
+
+function selectedMapProperties() {
+  return selectedMapFeature.value?.properties || {}
+}
+
+function selectedMapAttributes() {
+  return asRecord(selectedMapProperties().attributes) || {}
+}
+
+function selectedMapTitle() {
+  const properties = selectedMapProperties()
+  return readText(properties.name) || '空间要素'
+}
+
+function selectedMapType() {
+  const properties = selectedMapProperties()
+  return readText(properties.layer_type_name) || readableGisCategory(readText(properties.layer_type)) || '空间要素'
+}
+
+function selectedMapCoordinate() {
+  const properties = selectedMapProperties()
+  const centroid = asRecord(properties.centroid)
+  const lon = readNumber(properties.longitude) ?? readNumber(centroid?.longitude)
+  const lat = readNumber(properties.latitude) ?? readNumber(centroid?.latitude)
+  return formatCoordinate(lon, lat)
+}
+
+function selectedMapItems() {
+  const properties = selectedMapProperties()
+  const attributes = selectedMapAttributes()
+  return compactItems([
+    { label: '名称', value: selectedMapTitle() },
+    { label: '类型', value: selectedMapType() },
+    { label: '几何', value: readableGeometryType(readText(properties.geometry_type) || readText(selectedMapFeature.value?.geometry?.type)) },
+    { label: '坐标/代表点', value: selectedMapCoordinate() },
+    { label: '点号', value: readText(properties.point_id) },
+    { label: '速度', value: readText(properties.velocity) },
+    { label: '最新形变', value: readText(properties.latest_value) },
+    { label: '趋势', value: readText(properties.trend) },
+    { label: '观测次数', value: readText(properties.observation_count) },
+    { label: '相关名称', value: firstText([attributes.name_1, attributes.name_2, attributes.name]) },
+    { label: '要素类别', value: readText(attributes.fclass) },
+    { label: 'Mongo记录', value: readText(properties.id), wide: true },
+    { label: '来源文件', value: readText(properties.source_file_id), wide: true }
+  ])
+}
+
+function openSelectedMapInsarSeries() {
+  const sourceRecordId = readText(selectedMapProperties().source_record_id)
+  if (!sourceRecordId) return
+  openInsarSeries({ id: sourceRecordId })
+}
+
+function isSelectedMapInsar() {
+  return readText(selectedMapProperties().layer_type) === 'insar'
 }
 
 async function buildGraph() {
@@ -1281,10 +1534,12 @@ onMounted(refreshAll)
 onBeforeUnmount(() => {
   clearGraphPolling()
   chart?.dispose()
+  mapChart?.dispose()
   insarSeriesChart?.dispose()
   environmentSeriesChart?.dispose()
 })
 watch([graphNodes, graphEdges], () => nextTick(renderGraph), { deep: true })
+watch(mapLayerVisible, () => nextTick(renderSpatialMap), { deep: true })
 watch(environmentSeriesView, () => {
   if (environmentSeriesView.value === 'chart') nextTick(renderEnvironmentSeriesChart)
 })
@@ -1422,7 +1677,7 @@ watch(environmentSeriesView, () => {
             <el-icon><Tickets /></el-icon>
             <span>数据内容：{{ selectedDataset?.name || '未选择数据集' }}</span>
             <el-button size="small" :icon="Refresh" :disabled="!selectedDatasetId" @click="refreshDataContent">刷新</el-button>
-            <el-button size="small" type="danger" :icon="Delete" :disabled="!selectedDatasetId" @click="deleteCurrentData">
+            <el-button size="small" type="danger" :icon="Delete" :disabled="!selectedDatasetId || !canDeleteCurrentData" @click="deleteCurrentData">
               删除当前数据
             </el-button>
           </div>
@@ -1435,6 +1690,7 @@ watch(environmentSeriesView, () => {
               { label: '库水位数据', value: 'water_level' },
               { label: '降雨数据', value: 'rainfall' },
               { label: 'GIS矢量', value: 'gis_vector' },
+              { label: '空间地图', value: 'map' },
               { label: '文本资料', value: 'documents' },
               { label: '文本切片', value: 'chunks' }
             ]"
@@ -1538,6 +1794,54 @@ watch(environmentSeriesView, () => {
                 :total="gisTotal"
                 @current-change="changeGisPage"
               />
+            </div>
+          </template>
+
+          <template v-else-if="dataView === 'map'">
+            <div v-loading="dataLoading || mapLoading" class="spatial-map-layout">
+              <div class="spatial-map-main">
+                <div class="map-toolbar">
+                  <el-checkbox v-model="mapLayerVisible.areas">行政区</el-checkbox>
+                  <el-checkbox v-model="mapLayerVisible.waters">水域</el-checkbox>
+                  <el-checkbox v-model="mapLayerVisible.traffics">交通</el-checkbox>
+                  <el-checkbox v-model="mapLayerVisible.buildings">建筑</el-checkbox>
+                  <el-checkbox v-model="mapLayerVisible.insar_points">InSAR点</el-checkbox>
+                  <el-button size="small" :icon="Refresh" @click="refreshMapLayers">刷新地图</el-button>
+                </div>
+                <div v-if="!mapLayers" class="empty">当前数据集暂无可显示的空间数据</div>
+                <div ref="mapCanvas" class="spatial-map-canvas" />
+                <div v-if="mapLayers" class="map-counts">
+                  行政区 {{ mapLayers.counts.areas?.loaded || 0 }}/{{ mapLayers.counts.areas?.total || 0 }}，
+                  水域 {{ mapLayers.counts.waters?.loaded || 0 }}/{{ mapLayers.counts.waters?.total || 0 }}，
+                  交通 {{ mapLayers.counts.traffics?.loaded || 0 }}/{{ mapLayers.counts.traffics?.total || 0 }}，
+                  建筑 {{ mapLayers.counts.buildings?.loaded || 0 }}/{{ mapLayers.counts.buildings?.total || 0 }}，
+                  InSAR {{ mapLayers.counts.insar_points?.loaded || 0 }}
+                </div>
+              </div>
+              <aside class="map-detail">
+                <div class="node-detail-title">
+                  <el-icon><Location /></el-icon>
+                  <span>空间要素详情</span>
+                </div>
+                <template v-if="selectedMapFeature">
+                  <div class="map-detail-head">
+                    <div>
+                      <h3>{{ selectedMapTitle() }}</h3>
+                      <el-tag>{{ selectedMapType() }}</el-tag>
+                    </div>
+                    <el-button v-if="isSelectedMapInsar()" size="small" type="primary" @click="openSelectedMapInsarSeries">
+                      时序曲线
+                    </el-button>
+                  </div>
+                  <dl class="detail-list">
+                    <div v-for="item in selectedMapItems()" :key="item.label" class="detail-item" :class="{ wide: item.wide }">
+                      <dt>{{ item.label }}</dt>
+                      <dd>{{ item.value }}</dd>
+                    </div>
+                  </dl>
+                </template>
+                <el-empty v-else description="点击地图区域或 InSAR 点查看详情" />
+              </aside>
             </div>
           </template>
 

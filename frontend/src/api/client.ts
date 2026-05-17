@@ -171,6 +171,32 @@ export interface EnvironmentTimeSeries {
   observations: EnvironmentObservation[]
 }
 
+export interface GeoJsonFeature {
+  type: 'Feature'
+  geometry: Record<string, unknown>
+  properties: Record<string, unknown>
+}
+
+export interface GeoJsonFeatureCollection {
+  type: 'FeatureCollection'
+  features: GeoJsonFeature[]
+}
+
+export interface MapLayerCount {
+  loaded: number
+  total: number
+}
+
+export interface MapLayers {
+  areas: GeoJsonFeatureCollection
+  waters: GeoJsonFeatureCollection
+  traffics: GeoJsonFeatureCollection
+  buildings: GeoJsonFeatureCollection
+  insar_points: GeoJsonFeatureCollection
+  bounds?: number[] | null
+  counts: Record<string, MapLayerCount>
+}
+
 const API_BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -243,6 +269,8 @@ export const api = {
     request<InsarTimeSeries>(`/insar/time-series?record_id=${recordId}`),
   getEnvironmentTimeSeries: (datasetId: string, dataType: 'rainfall' | 'water_level') =>
     request<EnvironmentTimeSeries>(`/environment/time-series?dataset_id=${datasetId}&data_type=${dataType}`),
+  getMapLayers: (datasetId: string) =>
+    request<MapLayers>(`/map/layers?dataset_id=${datasetId}&simplify=true&feature_limit=2000`),
   buildGraph: (datasetId: string, includeTextKg = true) =>
     request<GraphBuildTask>('/graph/build', {
       method: 'POST',

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, data, datasets, graph, health, imports, qa
+from app.api.routes import auth, data, datasets, graph, health, imports, qa, spatial_map
 from app.core.config import settings
 from app.db.mongo import close_mongo, init_mongo
 from app.db.neo4j import close_neo4j, init_neo4j
@@ -37,3 +37,4 @@ app.include_router(data.router, prefix=settings.api_prefix, tags=["data"])
 app.include_router(imports.router, prefix=settings.api_prefix, tags=["imports"])
 app.include_router(graph.router, prefix=settings.api_prefix, tags=["graph"])
 app.include_router(qa.router, prefix=settings.api_prefix, tags=["qa"])
+app.include_router(spatial_map.router, prefix=settings.api_prefix, tags=["map"])
