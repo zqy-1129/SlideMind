@@ -1284,8 +1284,7 @@ function textDetailItems(
     { label: '向量ID', value: readText(attributes.milvus_vector_id), wide: true },
     { label: '文本事实', value: summarizeText(formatTextFacts(textFacts), 220), wide: true },
     { label: '内容摘要', value: summarizeText(readText(attributes.text) || readText(properties.evidence_text)), wide: true },
-    { label: '证据文本', value: summarizeText(readText(attributes.evidence_text) || readText(properties.evidence_text)), wide: true },
-    { label: '置信度', value: formatPercent(readNumber(attributes.confidence) ?? readNumber(properties.confidence)) }
+    { label: '证据文本', value: summarizeText(readText(attributes.evidence_text) || readText(properties.evidence_text)), wide: true }
   ])
 }
 
@@ -2106,9 +2105,6 @@ watch(environmentSeriesView, () => {
             <el-table-column prop="object" label="客体" min-width="180" show-overflow-tooltip />
             <el-table-column prop="region_name" label="所属区域" width="130" show-overflow-tooltip />
             <el-table-column prop="time" label="时间" width="130" show-overflow-tooltip />
-            <el-table-column label="置信度" width="100">
-              <template #default="{ row }">{{ formatPercent(readNumber(row.confidence)) || '-' }}</template>
-            </el-table-column>
             <el-table-column prop="evidence_text" label="证据文本" min-width="260" show-overflow-tooltip />
             <el-table-column label="来源" width="120" fixed="right">
               <template #default="{ row }">
@@ -2121,10 +2117,6 @@ watch(environmentSeriesView, () => {
                     <div class="detail-item">
                       <dt>区域匹配</dt>
                       <dd>{{ readableRegionMatch(row.region_match_method) || '-' }}</dd>
-                    </div>
-                    <div class="detail-item">
-                      <dt>区域置信度</dt>
-                      <dd>{{ formatPercent(readNumber(row.region_confidence)) || '-' }}</dd>
                     </div>
                     <div class="detail-item wide">
                       <dt>证据文本</dt>
