@@ -56,6 +56,18 @@ async def list_document_chunks(dataset_id: str | None = None, limit: int = 1000)
     return [stringify_id(document) async for document in cursor]
 
 
+@router.get("/text-tuples")
+async def list_text_tuples(dataset_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+    query = {"dataset_id": dataset_id} if dataset_id else {}
+    cursor = (
+        get_db()
+        .text_kg_tuples.find(query)
+        .sort([("created_at", -1), ("chunk_index", 1)])
+        .limit(min(limit, 5000))
+    )
+    return [stringify_id(document) async for document in cursor]
+
+
 @router.get("/gis-features")
 async def list_gis_features(
     dataset_id: str | None = None,

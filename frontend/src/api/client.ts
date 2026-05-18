@@ -102,6 +102,29 @@ export interface DocumentChunk {
   created_at: string
 }
 
+export interface TextKgTuple {
+  id: string
+  tuple_id?: string
+  dataset_id: string
+  document_id?: string
+  chunk_id?: string
+  source_file_id?: string
+  chunk_index?: number
+  subject: string
+  relation: string
+  object: string
+  time?: string
+  location?: string
+  region_id?: string
+  region_name?: string
+  region_match_method?: string
+  region_confidence?: number
+  confidence?: number
+  evidence_text?: string
+  status?: string
+  created_at?: string
+}
+
 export interface GisFeature {
   id: string
   dataset_id: string
@@ -258,6 +281,8 @@ export const api = {
     request<DocumentItem[]>(datasetId ? `/documents?dataset_id=${datasetId}&limit=1000` : '/documents?limit=1000'),
   listDocumentChunks: (datasetId?: string) =>
     request<DocumentChunk[]>(datasetId ? `/document-chunks?dataset_id=${datasetId}&limit=1000` : '/document-chunks?limit=1000'),
+  listTextTuples: (datasetId?: string) =>
+    request<TextKgTuple[]>(datasetId ? `/text-tuples?dataset_id=${datasetId}&limit=1000` : '/text-tuples?limit=1000'),
   listGisFeatures: (datasetId?: string, page = 1, pageSize = 20) => {
     const params = new URLSearchParams()
     if (datasetId) params.set('dataset_id', datasetId)

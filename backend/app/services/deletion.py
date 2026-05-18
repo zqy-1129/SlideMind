@@ -145,7 +145,7 @@ async def delete_dataset_data(dataset_id: str, data_kind: str) -> dict[str, Any]
             "graph_deleted": graph_deleted,
         }
 
-    if data_kind in {"documents", "chunks"}:
+    if data_kind in {"documents", "chunks", "tuples"}:
         files = [document async for document in database.uploaded_files.find({"dataset_id": dataset_id, "data_type": "document"})]
         file_ids = [str(document["_id"]) for document in files]
         chunk_ids = [

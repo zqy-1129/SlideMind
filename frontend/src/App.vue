@@ -18,7 +18,6 @@ import {
   api,
   type Answer,
   type Dataset,
-  type DocumentChunk,
   type DocumentItem,
   type EnvironmentTimeSeries,
   type GisFeature,
@@ -29,11 +28,12 @@ import {
   type InsarTimeSeries,
   type ImportTask,
   type MapLayers,
-  type TabularRecord
+  type TabularRecord,
+  type TextKgTuple
 } from './api/client'
 
 type AppPage = 'data' | 'analysis'
-type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'chunks'
+type DataView = 'insar' | 'water_level' | 'rainfall' | 'gis_vector' | 'documents' | 'tuples'
 type NodeDetailMode = 'formatted' | 'raw'
 type EnvironmentDataType = 'rainfall' | 'water_level'
 
@@ -67,9 +67,8 @@ const gisTotal = ref(0)
 const gisPage = ref(1)
 const gisPageSize = ref(20)
 const documents = ref<DocumentItem[]>([])
-const chunks = ref<DocumentChunk[]>([])
+const textTuples = ref<TextKgTuple[]>([])
 const selectedDatasetId = ref('')
-const selectedChunkId = ref('')
 const datasetName = ref('')
 const datasetDescription = ref('')
 const uploadDataType = ref('insar')
@@ -253,7 +252,7 @@ const dataViewLabel = computed(() => {
     rainfall: '降雨数据',
     gis_vector: 'GIS矢量数据',
     documents: '文本资料',
-    chunks: '文本切片'
+    tuples: '文本五元组'
   }
   return labels[dataView.value]
 })
@@ -309,7 +308,6 @@ const gisRows = computed(() =>
   }))
 )
 
-const selectedChunk = computed(() => chunks.value.find((chunk) => chunk.id === selectedChunkId.value) || chunks.value[0])
 const formattedGraphNodeDetail = computed(() => buildNodeDetail(selectedGraphNode.value))
 
 async function refreshAll() {
@@ -338,7 +336,7 @@ async function refreshDatasetScope() {
     recordTotal.value = 0
     gisTotal.value = 0
     documents.value = []
-    chunks.value = []
+    textTuples.value = []
     graphNodes.value = []
     graphEdges.value = []
     return
@@ -503,7 +501,7 @@ async function refreshDataContent() {
       recordTotal.value = page.total
       gisFeatures.value = []
       documents.value = []
-      chunks.value = []
+      textTuples.value = []
       return
     }
 
@@ -513,7 +511,7 @@ async function refreshDataContent() {
       gisTotal.value = page.total
       records.value = []
       documents.value = []
-      chunks.value = []
+      textTuples.value = []
       return
     }
 
@@ -523,13 +521,10 @@ async function refreshDataContent() {
     gisTotal.value = 0
     if (dataView.value === 'documents') {
       documents.value = await api.listDocuments(selectedDatasetId.value)
-      chunks.value = []
+      textTuples.value = []
     } else {
       documents.value = []
-      chunks.value = await api.listDocumentChunks(selectedDatasetId.value)
-      if (!chunks.value.some((chunk) => chunk.id === selectedChunkId.value)) {
-        selectedChunkId.value = chunks.value[0]?.id || ''
-      }
+      textTuples.value = await api.listTextTuples(selectedDatasetId.value)
     }
   } finally {
     dataLoading.value = false
@@ -1160,7 +1155,7 @@ function readableNodeType(entityType: string, gisCategory: string, sourceKind: s
   if (sourceKind === 'text_collection') return '文本知识集合'
   if (sourceKind === 'text_entity') return '文本知识实体'
   if (sourceKind === 'document') return '文本文档'
-  if (sourceKind === 'document_chunk') return '文本切片'
+  if (sourceKind === 'document_chunk') return '文本来源'
   if (sourceKind === 'environment_collection') return '环境时序集合'
   if (sourceKind === 'environment_series') {
     if (entityType.includes('降雨')) return '降雨时序'
@@ -1425,10 +1420,6 @@ function columnLabel(key: string) {
     water_level: '水位'
   }
   return labels[key] || key
-}
-
-function selectChunk(row: DocumentChunk) {
-  selectedChunkId.value = row.id
 }
 
 async function openInsarSeries(row: Record<string, unknown>) {
@@ -1977,7 +1968,7 @@ watch(environmentSeriesView, () => {
               { label: '降雨数据', value: 'rainfall' },
               { label: 'GIS矢量', value: 'gis_vector' },
               { label: '文本资料', value: 'documents' },
-              { label: '文本切片', value: 'chunks' }
+              { label: '五元组', value: 'tuples' }
             ]"
             @change="changeDataView"
           />
@@ -2096,31 +2087,61 @@ watch(environmentSeriesView, () => {
             <el-table-column prop="created_at" label="入库时间" width="180" />
           </el-table>
 
-          <el-row v-else :gutter="12" v-loading="dataLoading">
-            <el-col :span="10">
-              <el-table
-                :data="chunks"
-                height="360"
-                size="small"
-                border
-                highlight-current-row
-                empty-text="当前数据集暂无文本切片"
-                @row-click="selectChunk"
-              >
-                <el-table-column prop="chunk_index" label="序号" width="80" />
-                <el-table-column prop="text" label="内容预览" min-width="220" show-overflow-tooltip />
-              </el-table>
-            </el-col>
-            <el-col :span="14">
-              <div class="chunk-preview">
-                <div class="chunk-title">
-                  <el-icon><Document /></el-icon>
-                  <span>切片预览</span>
-                </div>
-                <p>{{ selectedChunk?.text || '暂无可预览内容' }}</p>
-              </div>
-            </el-col>
-          </el-row>
+          <el-table
+            v-else
+            v-loading="dataLoading"
+            :data="textTuples"
+            height="360"
+            size="small"
+            border
+            empty-text="当前数据集暂无文本五元组，请先生成包含文本融合的图谱"
+          >
+            <el-table-column type="index" label="序号" width="70" />
+            <el-table-column prop="subject" label="主体" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="relation" label="关系" width="110">
+              <template #default="{ row }">
+                <el-tag size="small">{{ row.relation }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="object" label="客体" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="region_name" label="所属区域" width="130" show-overflow-tooltip />
+            <el-table-column prop="time" label="时间" width="130" show-overflow-tooltip />
+            <el-table-column label="置信度" width="100">
+              <template #default="{ row }">{{ formatPercent(readNumber(row.confidence)) || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="evidence_text" label="证据文本" min-width="260" show-overflow-tooltip />
+            <el-table-column label="来源" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-popover placement="left" width="520" trigger="click">
+                  <dl class="detail-list">
+                    <div class="detail-item wide">
+                      <dt>五元组</dt>
+                      <dd>{{ row.subject }} - {{ row.relation }} - {{ row.object }}</dd>
+                    </div>
+                    <div class="detail-item">
+                      <dt>区域匹配</dt>
+                      <dd>{{ readableRegionMatch(row.region_match_method) || '-' }}</dd>
+                    </div>
+                    <div class="detail-item">
+                      <dt>区域置信度</dt>
+                      <dd>{{ formatPercent(readNumber(row.region_confidence)) || '-' }}</dd>
+                    </div>
+                    <div class="detail-item wide">
+                      <dt>证据文本</dt>
+                      <dd>{{ row.evidence_text || '-' }}</dd>
+                    </div>
+                    <div class="detail-item wide">
+                      <dt>来源Chunk</dt>
+                      <dd>{{ row.chunk_id || '-' }}</dd>
+                    </div>
+                  </dl>
+                  <template #reference>
+                    <el-button size="small" :icon="Document">查看</el-button>
+                  </template>
+                </el-popover>
+              </template>
+            </el-table-column>
+          </el-table>
         </section>
 
         <section class="panel map-panel">
@@ -2215,7 +2236,7 @@ watch(environmentSeriesView, () => {
             <el-progress :percentage="graphTask.progress || 0" :status="graphTask.status === 'failed' ? 'exception' : graphTask.status === 'completed' ? 'success' : undefined" />
             <div v-if="graphTask.summary?.text_kg_enabled !== undefined" class="graph-task-summary">
               文本融合：{{ graphTask.summary.text_kg_enabled ? '开启' : '关闭' }}，
-              chunk {{ graphTask.summary.text_chunks_processed || 0 }}/{{ graphTask.summary.text_chunks_total || 0 }}，
+              文本块 {{ graphTask.summary.text_chunks_processed || 0 }}/{{ graphTask.summary.text_chunks_total || 0 }}，
               五元组 {{ graphTask.summary.text_tuple_count || 0 }}，
               区域匹配 {{ graphTask.summary.text_region_matched || 0 }}，
               未定位 {{ graphTask.summary.text_region_unmatched || 0 }}
