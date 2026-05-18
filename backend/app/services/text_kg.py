@@ -1,8 +1,6 @@
 import hashlib
 import json
 import re
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable
@@ -11,6 +9,7 @@ from bson import ObjectId
 
 from app.core.config import settings
 from app.db.mongo import get_db
+from app.services.text_extractor import extract_stkg_tuples
 
 ProgressLogger = Callable[[str, int], Awaitable[None]]
 
@@ -253,7 +252,6 @@ def _extract_with_llm(
 ) -> list[dict[str, Any]]:
     if settings.llm_provider == "mock" or not settings.openai_api_key:
         return []
-    base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
     region_payload = [
         {
             "region_id": region.region_id,
@@ -263,38 +261,7 @@ def _extract_with_llm(
         }
         for region in regions[:40]
     ]
-    prompt = (
-        "你是滑坡知识图谱抽取器。请从文本中抽取实体关系型五元组，返回严格 JSON 数组。"
-        "字段必须为 subject, relation, object, time, location, region_id, region_name, confidence, evidence_text。"
-        "region_id 只能从候选区域中选择，无法判断时为 null。不要编造区域。\n"
-        f"候选区域：{json.dumps(region_payload, ensure_ascii=False)}\n"
-        f"默认区域：{matched_region.region_name if matched_region else '未知'}\n"
-        f"文本：{text[:2600]}"
-    )
-    body = {
-        "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": "只输出 JSON，不要输出 Markdown。"},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.1,
-    }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {settings.openai_api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=40) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        content = payload["choices"][0]["message"]["content"]
-        return _parse_tuple_json(content, {region.region_id for region in regions})
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError):
-        return []
+    return extract_stkg_tuples(text, region_payload, matched_region.region_name if matched_region else None, {region.region_id for region in regions})
 
 
 def _extract_with_rules(text: str, matched_region: RegionCandidate | None) -> list[dict[str, Any]]:

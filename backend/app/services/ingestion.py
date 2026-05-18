@@ -5,6 +5,7 @@ from bson import ObjectId
 
 from app.db.milvus import get_collection
 from app.db.mongo import get_db
+from app.services.document_chunker import build_document_chunks
 from app.services.embedding import embed_text
 from app.services.environment_time_series import build_environment_time_series_document
 from app.services.insar_time_series import build_insar_time_series_document
@@ -18,7 +19,6 @@ from app.services.parsers import (
     parse_geojson,
     parse_table,
     parse_text,
-    split_text,
 )
 from app.utils.ids import oid
 from app.utils.mongo_values import clean_for_mongo
@@ -121,8 +121,8 @@ async def _ingest_table(task: dict, file_doc: dict) -> int:
 
 async def _ingest_text(task: dict, file_doc: dict) -> int:
     source_file_id = str(file_doc["_id"])
-    old_documents = get_db().documents.find({"source_file_id": source_file_id}, {"_id": 1})
-    old_document_ids = [str(document["_id"]) async for document in old_documents]
+    old_chunks = get_db().document_chunks.find({"source_file_id": source_file_id}, {"_id": 1})
+    old_chunk_ids = [str(document["_id"]) async for document in old_chunks]
     await get_db().documents.delete_many({"source_file_id": source_file_id})
     await get_db().document_chunks.delete_many({"source_file_id": source_file_id})
     await get_db().text_kg_tuples.delete_many({"source_file_id": source_file_id})
@@ -140,12 +140,13 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
         }
     )
 
-    chunks = split_text(text)
+    chunks = build_document_chunks(file_doc["path"], text)
     chunk_docs = []
     vector_rows = []
     for index, chunk in enumerate(chunks):
         chunk_id = oid()
         vector_id = f"vec_{chunk_id}"
+        chunk_text = chunk["text"]
         chunk_docs.append(
             {
                 "_id": ObjectId(chunk_id),
@@ -153,7 +154,12 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
                 "source_file_id": source_file_id,
                 "document_id": document_id,
                 "chunk_index": index,
-                "text": chunk,
+                "text": chunk_text,
+                "title_path": chunk.get("title_path", ""),
+                "tokens": chunk.get("tokens"),
+                "chunk_type": chunk.get("chunk_type", "text"),
+                "parser_version": chunk.get("parser_version", "stkg_v1"),
+                "chunk_order_index": chunk.get("chunk_order_index", index),
                 "entity_ids": [],
                 "tuple_ids": [],
                 "region_id": None,
@@ -171,8 +177,8 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
                 "mongo_id": chunk_id,
                 "dataset_id": task["dataset_id"],
                 "source_type": "document_chunk",
-                "text": chunk[:4096],
-                "embedding": embed_text(chunk),
+                "text": chunk_text[:4096],
+                "embedding": embed_text(chunk_text),
             }
         )
 
@@ -180,8 +186,9 @@ async def _ingest_text(task: dict, file_doc: dict) -> int:
         await get_db().document_chunks.insert_many(chunk_docs)
         try:
             collection = get_collection()
-            if old_document_ids:
-                expr = f'source_type == "document_chunk" && mongo_id in {old_document_ids}'
+            if old_chunk_ids:
+                quoted_chunk_ids = ", ".join(f'"{chunk_id}"' for chunk_id in old_chunk_ids)
+                expr = f'source_type == "document_chunk" && mongo_id in [{quoted_chunk_ids}]'
                 collection.delete(expr)
             collection.insert(vector_rows)
             collection.flush()
