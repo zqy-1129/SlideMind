@@ -1064,7 +1064,6 @@ function buildNodeDetail(node: GraphNode | null) {
       items: compactItems([
         { label: '所属区域', value: readText(properties.admin_belong) || readText(properties.region_name) },
         { label: '区域匹配', value: readableRegionMatch(readText(attributes.region_match_method) || readText(properties.region_match_method)) },
-        { label: '区域置信度', value: formatPercent(readNumber(attributes.region_confidence) ?? readNumber(properties.region_confidence)) },
         { label: '来源文件', value: readText(properties.source_file) || readText(properties.source_file_id), wide: true },
         { label: 'Mongo记录', value: readText(properties.mongo_id), wide: true }
       ])
