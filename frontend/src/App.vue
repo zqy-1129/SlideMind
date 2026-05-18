@@ -81,6 +81,7 @@ const graphNodes = ref<GraphNode[]>([])
 const graphEdges = ref<GraphEdge[]>([])
 const graphCanvas = ref<HTMLDivElement | null>(null)
 const mapCanvas = ref<HTMLDivElement | null>(null)
+const coverCanvas = ref<HTMLCanvasElement | null>(null)
 const insarSeriesCanvas = ref<HTMLDivElement | null>(null)
 const environmentSeriesCanvas = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -88,7 +89,11 @@ let mapChart: echarts.ECharts | null = null
 let insarSeriesChart: echarts.ECharts | null = null
 let environmentSeriesChart: echarts.ECharts | null = null
 let graphPollTimer: number | null = null
+let coverAnimationFrame: number | null = null
+let coverResizeHandler: (() => void) | null = null
 let mapFeatureIndex = new Map<string, GeoJsonFeature>()
+const coverVisible = ref(true)
+const systemStarted = ref(false)
 const graphTask = ref<GraphTask | null>(null)
 const graphNodeTypes = ref<string[]>([])
 const graphNodeType = ref('')
@@ -140,6 +145,106 @@ const graphTypeColors = [
   '#475569',
   '#7c3aed'
 ]
+
+async function enterSystem() {
+  coverVisible.value = false
+  stopCoverScene()
+  if (systemStarted.value) return
+  systemStarted.value = true
+  await refreshAll()
+}
+
+function startCoverScene() {
+  const canvas = coverCanvas.value
+  if (!canvas) return
+  const context = canvas.getContext('2d')
+  if (!context) return
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const points = Array.from({ length: 54 }, (_, index) => ({
+    seed: index,
+    x: Math.random(),
+    y: Math.random(),
+    phase: Math.random() * Math.PI * 2
+  }))
+
+  const resize = () => {
+    const rect = canvas.getBoundingClientRect()
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr))
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr))
+    context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+  coverResizeHandler = resize
+  resize()
+  window.addEventListener('resize', resize)
+
+  const draw = (time: number) => {
+    const width = canvas.clientWidth
+    const height = canvas.clientHeight
+    context.clearRect(0, 0, width, height)
+    context.fillStyle = '#f7fbfb'
+    context.fillRect(0, 0, width, height)
+
+    context.lineWidth = 1
+    for (let band = 0; band < 10; band += 1) {
+      const yBase = height * (0.18 + band * 0.075)
+      context.beginPath()
+      for (let step = 0; step <= 90; step += 1) {
+        const x = (width / 90) * step
+        const wave = Math.sin(step * 0.22 + band * 0.9 + time * 0.00035) * 18
+        const ridge = Math.sin(step * 0.06 + band * 1.7) * 34
+        const y = yBase + wave + ridge
+        if (step === 0) context.moveTo(x, y)
+        else context.lineTo(x, y)
+      }
+      context.strokeStyle = band % 3 === 0 ? 'rgba(22,106,91,0.2)' : 'rgba(37,99,235,0.13)'
+      context.stroke()
+    }
+
+    const areaColors = ['rgba(20,184,166,0.22)', 'rgba(245,158,11,0.2)', 'rgba(99,102,241,0.18)', 'rgba(244,114,182,0.16)']
+    for (let index = 0; index < 9; index += 1) {
+      const centerX = width * (0.25 + (index % 3) * 0.16)
+      const centerY = height * (0.42 + Math.floor(index / 3) * 0.13)
+      context.beginPath()
+      for (let side = 0; side <= 8; side += 1) {
+        const angle = (Math.PI * 2 * side) / 8
+        const radius = 70 + Math.sin(time * 0.0004 + index + side) * 9
+        const x = centerX + Math.cos(angle) * radius
+        const y = centerY + Math.sin(angle) * radius * 0.72
+        if (side === 0) context.moveTo(x, y)
+        else context.lineTo(x, y)
+      }
+      context.fillStyle = areaColors[index % areaColors.length]
+      context.strokeStyle = 'rgba(15,118,110,0.34)'
+      context.lineWidth = 1.2
+      context.fill()
+      context.stroke()
+    }
+
+    for (const point of points) {
+      const x = point.x * width
+      const y = point.y * height
+      const pulse = 1.5 + Math.sin(time * 0.002 + point.phase) * 0.7
+      context.beginPath()
+      context.arc(x, y, pulse, 0, Math.PI * 2)
+      context.fillStyle = point.seed % 4 === 0 ? 'rgba(239,68,68,0.75)' : 'rgba(147,51,234,0.56)'
+      context.fill()
+    }
+
+    coverAnimationFrame = window.requestAnimationFrame(draw)
+  }
+  coverAnimationFrame = window.requestAnimationFrame(draw)
+}
+
+function stopCoverScene() {
+  if (coverAnimationFrame !== null) {
+    window.cancelAnimationFrame(coverAnimationFrame)
+    coverAnimationFrame = null
+  }
+  if (coverResizeHandler) {
+    window.removeEventListener('resize', coverResizeHandler)
+    coverResizeHandler = null
+  }
+}
 
 const dataViewLabel = computed(() => {
   const labels: Record<DataView, string> = {
@@ -1676,9 +1781,10 @@ function renderGraph() {
   chart.resize()
 }
 
-onMounted(refreshAll)
+onMounted(() => nextTick(startCoverScene))
 onBeforeUnmount(() => {
   clearGraphPolling()
+  stopCoverScene()
   chart?.dispose()
   mapChart?.dispose()
   insarSeriesChart?.dispose()
@@ -1695,7 +1801,38 @@ watch(environmentSeriesView, () => {
 </script>
 
 <template>
-  <el-container class="layout">
+  <section v-if="coverVisible" class="cover-page">
+    <canvas ref="coverCanvas" class="cover-canvas" />
+    <div class="cover-content">
+      <div class="cover-brand">
+        <span class="cover-mark">SM</span>
+        <span>SlideMind</span>
+      </div>
+      <h1>滑坡智能问答系统</h1>
+      <p>面向 GIS 矢量、InSAR 时序、库水位、降雨和文本知识的滑坡数据管理、空间图谱与智能问答平台。</p>
+      <div class="cover-actions">
+        <el-button type="primary" size="large" :loading="loading" @click="enterSystem">
+          进入系统
+        </el-button>
+      </div>
+      <div class="cover-metrics">
+        <div>
+          <strong>MongoDB</strong>
+          <span>表格与文本数据</span>
+        </div>
+        <div>
+          <strong>Neo4j</strong>
+          <span>空间知识图谱</span>
+        </div>
+        <div>
+          <strong>Milvus</strong>
+          <span>语义检索向量</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <el-container v-else class="layout">
     <el-aside width="280px" class="sidebar">
       <div class="brand">
         <div class="brand-mark">SM</div>
